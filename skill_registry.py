@@ -16,8 +16,9 @@ from typing import Any
 
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
 
-# skill name 校验规则（对应 Pi skills.js 的 validateName）
+# skill 校验规则（对应 Pi skills.js 的 validateName / validateDescription）
 MAX_NAME_LENGTH = 64
+MAX_DESCRIPTION_LENGTH = 1024
 _NAME_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
 
@@ -40,6 +41,22 @@ def validate_skill_name(name: str) -> list[str]:
         errors.append("name 不能以 - 开头或结尾")
     if "--" in name:
         errors.append("name 不能包含连续 --")
+    return errors
+
+
+def validate_skill_description(description: str) -> list[str]:
+    """
+    校验 skill description（对应 Pi skills.js 的 validateDescription）。
+
+    规则:
+    - 必填（缺失/空白 → 不加载，硬阻断，与 name 的 warning 不阻断不同）
+    - 长度 ≤ 1024（超长 → warning，仍加载）
+    """
+    errors: list[str] = []
+    if not description or description.strip() == "":
+        errors.append("description 缺失（必填）")
+    elif len(description) > MAX_DESCRIPTION_LENGTH:
+        errors.append(f"description 超过 {MAX_DESCRIPTION_LENGTH} 字符 ({len(description)})")
     return errors
 
 
@@ -118,6 +135,14 @@ def _parse_skill_file(filepath: str, fallback_id: str = "") -> SkillMeta | None:
     # name 校验（对应 Pi validateName：违反只 warning，不阻断加载）
     for err in validate_skill_name(skill_id):
         print(f"[skill_registry] 警告: {skill_id}: {err} ({filepath})", file=sys.stderr)
+
+    # description 校验（对应 Pi validateDescription）
+    description = meta.get("description", "")
+    for err in validate_skill_description(description):
+        print(f"[skill_registry] 警告: {skill_id}: {err} ({filepath})", file=sys.stderr)
+    # description 缺失 → 不加载（Pi 语义：硬阻断，与 name 的 warning 不阻断不同）
+    if not description or not description.strip():
+        return None
 
     return SkillMeta(
         id=skill_id,
