@@ -37,6 +37,9 @@ from deepseek import chat_completion
 # ─── 常量 ──────────────────────────────────────────────
 MAX_RECENT_MESSAGES = 8          # 最近 4 轮 = 8 条
 MAX_SUMMARY_CHARS = 2500         # 摘要上限
+COMPACT_TOKEN_THRESHOLD = 4800   # token 估算阈值（约 60% 上下文窗口）
+TOKEN_ESTIMATE_DIVISOR = 3.5    # 字符数 / 3.5 ≈ token 数（中英混合估算）
+COMPACT_COOLDOWN_MESSAGES = 4   # 压缩冷却期：压缩后至少新增 4 条才再次触发
 MAX_PINNED_DECISIONS = 20        # 关键决策上限
 MAX_PINNED_DECISION_CHARS = 300  # 每条决策上限
 MAX_ASSISTANT_TEXT_CHARS = 8000  # 单条助手回答上限
@@ -63,6 +66,7 @@ class ThreadState:
     summary: str = ""
     pinned_decisions: list[str] = field(default_factory=list)
     last_compacted_at: float = 0.0
+    messages_count_at_last_compact: int = 0  # 上次压缩后的消息数（用于冷却期）
 
     def append(self, role: str, text: str) -> bool:
         """
@@ -90,8 +94,25 @@ class ThreadState:
         return True
 
     def should_compact(self) -> bool:
-        """是否需要触发压缩"""
-        return len(self.messages) > MAX_RECENT_MESSAGES
+        """
+        是否需要触发压缩（token 感知 + 冷却期）。
+
+        借鉴 Pi (pi.dev) 的 compaction 设计：
+        - token 感知：按字符估算总 token（messages + summary + pinned），
+          超过阈值才触发，避免短消息对话频繁压缩、长消息对话迟迟不压
+        - 冷却期：上次压缩后至少新增 COMPACT_COOLDOWN_MESSAGES 条才再次触发
+        """
+        if len(self.messages) <= MAX_RECENT_MESSAGES:
+            return False
+        # 冷却期：压缩后未新增足够消息则不触发
+        if len(self.messages) - self.messages_count_at_last_compact < COMPACT_COOLDOWN_MESSAGES:
+            return False
+        # token 估算：字符数 / 3.5 ≈ token 数（中英混合）
+        total_chars = sum(len(m.text) for m in self.messages)
+        total_chars += len(self.summary)
+        total_chars += sum(len(d) for d in self.pinned_decisions)
+        estimated_tokens = int(total_chars / TOKEN_ESTIMATE_DIVISOR)
+        return estimated_tokens >= COMPACT_TOKEN_THRESHOLD
 
     def build_model_context(self) -> list[dict[str, str]]:
         """
@@ -315,13 +336,15 @@ async def compact_thread(state: ThreadState) -> None:
         existing_pinned = "\n\n已有关键决策:\n" + "\n".join(f"- {d}" for d in state.pinned_decisions)
 
     system_prompt = (
-        "你是一个对话压缩助手。请将以下早期对话压缩成两部分:\n\n"
-        "1. summary: 早期对话的背景摘要（不超过2500字），保留关键信息和上下文\n"
-        "2. pinned_decisions: 用户明确拍板的关键决策、架构边界、重要结论"
-        "（每条不超过300字，最多20条）\n\n"
+        "你是一个对话压缩助手。请基于【已有摘要】和【新增早期对话】，"
+        "输出一个全新的整合摘要（不超过2500字），覆盖之前的摘要，"
+        "保留所有关键信息和上下文，消除多次压缩产生的冗余累积。\n\n"
+        "同时提取用户明确拍板的关键决策、架构边界、重要结论"
+        "（每条不超过300字，最多20条）。\n\n"
         "只返回 JSON 格式:\n"
-        '{"summary": "...", "pinned_decisions": ["...", "..."]}\n\n'
-        "注意: pinned_decisions 只包含用户明确的决策和结论，不要包含普通对话背景。"
+        '{"summary": "全新的整合摘要", "pinned_decisions": ["...", "..."]}\n\n'
+        "注意: summary 是对已有摘要+新对话的整合重写，不是追加拼接；"
+        "pinned_decisions 只包含用户明确的决策和结论，不要包含普通对话背景。"
     )
 
     messages = [
@@ -342,12 +365,10 @@ async def compact_thread(state: ThreadState) -> None:
         new_summary = parsed.get("summary", "")
         new_pinned = parsed.get("pinned_decisions", [])
 
-        # 合并摘要
-        if state.summary and new_summary:
-            state.summary = state.summary + "\n\n" + new_summary
-        elif new_summary:
-            state.summary = new_summary
-        state.summary = state.summary[:MAX_SUMMARY_CHARS]
+        # 重写摘要：用模型输出的全新整合摘要覆盖（而非拼接，避免"摘要的摘要"信息衰减）
+        if new_summary:
+            state.summary = new_summary[:MAX_SUMMARY_CHARS]
+        # 若模型未返回 summary，保留原 summary（降级，不丢失已有背景）
 
         # 合并关键决策（去重）
         existing_set = set(state.pinned_decisions)
@@ -359,6 +380,7 @@ async def compact_thread(state: ThreadState) -> None:
 
         state.messages = state.messages[-MAX_RECENT_MESSAGES:]
         state.last_compacted_at = time.time()
+        state.messages_count_at_last_compact = len(state.messages)  # 冷却期基准
 
     except Exception:
         # 压缩失败，不覆盖已有 ThreadState，不影响用户
