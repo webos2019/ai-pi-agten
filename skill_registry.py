@@ -8,11 +8,39 @@
 """
 
 import os
+import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any
 
 
 SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
+
+# skill name 校验规则（对应 Pi skills.js 的 validateName）
+MAX_NAME_LENGTH = 64
+_NAME_PATTERN = re.compile(r"^[a-z0-9-]+$")
+
+
+def validate_skill_name(name: str) -> list[str]:
+    """
+    校验 skill name（对应 Pi skills.js 的 validateName）。
+
+    规则（违反产生 warning，不阻断加载，与 Pi 一致）:
+    - 长度 ≤ 64
+    - 只含小写 a-z / 0-9 / 连字符
+    - 不以 - 开头或结尾
+    - 无连续 --
+    """
+    errors: list[str] = []
+    if len(name) > MAX_NAME_LENGTH:
+        errors.append(f"name 超过 {MAX_NAME_LENGTH} 字符 ({len(name)})")
+    if not _NAME_PATTERN.match(name):
+        errors.append("name 含非法字符（只能小写 a-z / 0-9 / 连字符）")
+    if name.startswith("-") or name.endswith("-"):
+        errors.append("name 不能以 - 开头或结尾")
+    if "--" in name:
+        errors.append("name 不能包含连续 --")
+    return errors
 
 
 @dataclass
@@ -86,6 +114,10 @@ def _parse_skill_file(filepath: str, fallback_id: str = "") -> SkillMeta | None:
     skill_id = meta.get("id") or fallback_id
     if not skill_id:
         return None
+
+    # name 校验（对应 Pi validateName：违反只 warning，不阻断加载）
+    for err in validate_skill_name(skill_id):
+        print(f"[skill_registry] 警告: {skill_id}: {err} ({filepath})", file=sys.stderr)
 
     return SkillMeta(
         id=skill_id,
