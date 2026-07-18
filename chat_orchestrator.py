@@ -2,6 +2,8 @@
 
 import json
 import asyncio
+import os
+import re
 from typing import Any
 
 from chat_session import ChatSession
@@ -99,6 +101,15 @@ async def _try_agent_entry(
         if uri_match:
             version_plan_uri = f"docs://versions/{uri_match.group(1)}"
 
+    # 借鉴 Pi (pi.dev) 的 AGENTS.md 机制：缺少显式引用时，自动发现默认版本方案
+    if not version_plan_uri:
+        auto_uri = _discover_default_version_plan()
+        if auto_uri:
+            version_plan_uri = auto_uri
+            lifecycle.write_chunk(create_text_chunk(
+                f"📌 自动发现默认版本方案: `{auto_uri}`（来自 AGENTS.md）\n\n"
+            ))
+
     if not version_plan_uri:
         # 命中 /tasklist 但缺少版本方案引用 → 明确提示
         lifecycle.write_chunk(create_text_chunk(
@@ -123,6 +134,37 @@ async def _try_agent_entry(
 
 def _list_version_plans() -> list[dict[str, str]]:
     return list_available_version_plans()
+
+
+def _discover_default_version_plan() -> str | None:
+    """
+    从项目根 AGENTS.md 自动发现默认版本方案 URI。
+
+    借鉴 Pi (pi.dev) 的 AGENTS.md 项目指令加载机制：
+    Pi 从 ~/.pi/agent/、父目录链、当前目录发现 AGENTS.md 并注入上下文。
+    本服务为 Web 后端，cwd 固定为项目根，故直接从项目根读取 AGENTS.md。
+
+    AGENTS.md 中通过 `default_version_plan: docs://versions/xxx.md` 声明默认方案。
+    返回确实存在的 URI 字符串；未声明或文件不存在则返回 None。
+    """
+    agents_md = os.path.join(os.path.dirname(__file__), "AGENTS.md")
+    if not os.path.isfile(agents_md):
+        return None
+    try:
+        with open(agents_md, "r", encoding="utf-8") as f:
+            content = f.read()
+    except OSError:
+        return None
+    match = re.search(
+        r"^default_version_plan:\s*(docs://versions/[^\s]+\.md)\s*$",
+        content, re.MULTILINE | re.IGNORECASE,
+    )
+    if not match:
+        return None
+    uri = match.group(1).strip()
+    # 校验方案文件确实存在
+    _filename, filepath = resolve_version_plan_uri(uri)
+    return uri if filepath else None
 
 
 async def orchestrate_chat(
