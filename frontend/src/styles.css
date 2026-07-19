@@ -465,6 +465,113 @@ body {
 .agent-step-badge.error { background: rgba(255,82,82,0.1); color: var(--red-err); border: 1px solid rgba(255,82,82,0.2); }
 .agent-step-summary { padding: 0.375rem 0.75rem; font-size: 0.6875rem; color: var(--text-secondary); font-family: "SF Mono", monospace; }
 
+/* ═══ Steer (流式插话) ═══ */
+.steer-block {
+    border-radius: 0.75rem;
+    border: 1px solid;
+    margin: 0.5rem 0;
+    overflow: hidden;
+    font-family: "SF Mono", monospace;
+}
+.steer-queued-block {
+    border-color: rgba(0,229,255,0.3);
+    background: linear-gradient(135deg, rgba(0,229,255,0.05), rgba(0,229,255,0.02));
+}
+.steer-applied-block {
+    border-color: rgba(0,230,118,0.3);
+    background: linear-gradient(135deg, rgba(0,230,118,0.05), rgba(0,230,118,0.02));
+}
+.steer-rejected-block {
+    border-color: rgba(255,82,82,0.3);
+    background: linear-gradient(135deg, rgba(255,82,82,0.05), rgba(255,82,82,0.02));
+}
+.steer-header {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    font-size: 0.6875rem;
+    font-weight: 600;
+}
+.steer-queued-block .steer-label { color: var(--cyan); }
+.steer-applied-block .steer-label { color: var(--green-ok); }
+.steer-rejected-block .steer-label { color: var(--red-err); }
+.steer-icon { font-size: 0.875rem; }
+.steer-badge {
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    background: rgba(0,229,255,0.1);
+    color: var(--cyan);
+    border: 1px solid var(--cyan-border);
+}
+.steer-action-type {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+.steer-text {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.steer-reason {
+    padding: 0.25rem 0.75rem 0.5rem;
+    font-size: 0.6875rem;
+    color: var(--red-err);
+}
+
+/* Steer 输入区 */
+.steer-input-wrapper {
+    border-radius: 0.75rem;
+    border: 1px solid var(--cyan-border);
+    background: linear-gradient(135deg, rgba(0,229,255,0.04), rgba(0,229,255,0.01));
+    padding: 0.5rem;
+    box-shadow: 0 0 12px rgba(0,229,255,0.08);
+}
+.steer-input {
+    background: rgba(15,22,38,0.8);
+    border: 1px solid var(--cyan-border);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    font-family: inherit;
+    outline: none;
+    transition: all 200ms;
+}
+.steer-input:focus {
+    border-color: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan-glow);
+}
+.steer-input::placeholder {
+    color: var(--text-muted);
+}
+.steer-btn {
+    background: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(0,229,255,0.05));
+    border: 1px solid var(--cyan-border);
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--cyan);
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 200ms;
+    white-space: nowrap;
+}
+.steer-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, rgba(0,229,255,0.25), rgba(0,229,255,0.1));
+    border-color: var(--cyan);
+    box-shadow: 0 0 12px var(--cyan-glow);
+}
+.steer-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
 /* ═══ Scroll To Bottom Button ═══ */
 .scroll-to-bottom-btn {
     position: absolute;

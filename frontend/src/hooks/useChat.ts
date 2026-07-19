@@ -10,6 +10,8 @@ export function useChat() {
     const [error, setError] = useState<string | null>(null)
     const [streamingBlocks, setStreamingBlocks] = useState<ChatBlock[]>([])
     const [streamingText, setStreamingText] = useState('')
+    const [steerQueueId, setSteerQueueId] = useState<string | null>(null)
+    const [steerError, setSteerError] = useState<string | null>(null)
     const abortRef = useRef<AbortController | null>(null)
 
     const isStreaming = status === 'loading' || status === 'streaming'
@@ -40,6 +42,11 @@ export function useChat() {
 
     // ─── addChunk: text/reasoning 走缓冲，结构性 chunk 先 flush ──
     const addChunk = useCallback((chunk: any) => {
+        // start chunk: 提取 steerQueueId，不加入 streamingBlocks
+        if (chunk.type === 'start') {
+            if (chunk.steerQueueId) setSteerQueueId(chunk.steerQueueId)
+            return
+        }
         if (chunk.type === 'text') { enqueue('text', chunk.content || ''); return }
         if (chunk.type === 'reasoning') { enqueue('reasoning', chunk.content || ''); return }
 
@@ -48,6 +55,15 @@ export function useChat() {
         setStreamingBlocks(prev => {
             const next = [...prev]
             switch (chunk.type) {
+                case 'steer_queued':
+                    next.push({ type: 'steer_queued', steerId: chunk.steerId, steerText: chunk.steerText, queueSize: chunk.queueSize, content: chunk.steerText || '' })
+                    break
+                case 'steer_applied':
+                    next.push({ type: 'steer_applied', steerId: chunk.steerId, steerText: chunk.steerText, appliedAtStep: chunk.appliedAtStep, actionType: chunk.actionType, content: chunk.steerText || '' })
+                    break
+                case 'steer_rejected':
+                    next.push({ type: 'steer_rejected', steerId: chunk.steerId, steerText: chunk.steerText, reason: chunk.reason, content: chunk.steerText || '' })
+                    break
                 case 'tool_call':
                     next.push({ type: 'tool_call', toolName: chunk.toolName || '', toolArgs: chunk.toolArgs || {}, serverId: chunk.serverId, content: '' })
                     break
@@ -153,6 +169,8 @@ export function useChat() {
         setStatus('loading')
         setStreamingBlocks([])
         setStreamingText('')
+        setSteerQueueId(null)
+        setSteerError(null)
         reset()
 
         const userMessage: ChatMessage = {
@@ -228,6 +246,9 @@ export function useChat() {
                             stepIndex: chunk.stepIndex, status: chunk.status,
                             summary: chunk.summary, durationMs: chunk.durationMs,
                             runId: chunk.runId,
+                            steerId: chunk.steerId, steerText: chunk.steerText,
+                            appliedAtStep: chunk.appliedAtStep, queueSize: chunk.queueSize,
+                            reason: chunk.reason,
                         })
                         if (chunk.type === 'done') isDone = true
                     } catch { /* skip */ }
@@ -242,6 +263,7 @@ export function useChat() {
             setMessages(prev => trimMsgs([...prev, assistantMessage]))
             setStreamingBlocks([])
             setStreamingText('')
+            setSteerQueueId(null)
             setStatus('idle')
         } catch (err: any) {
             flushAndClear()
@@ -257,6 +279,7 @@ export function useChat() {
     const cancelStream = useCallback(() => {
         if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
         flushAndClear()
+        setSteerQueueId(null)
         setStatus('idle')
     }, [flushAndClear])
 
@@ -285,10 +308,34 @@ export function useChat() {
         return null
     }, [messages])
 
+    // ─── 流式插话 (steer) ──────────────────────────────
+    const sendSteer = useCallback(async (text: string): Promise<boolean> => {
+        if (!steerQueueId || !isStreaming) return false
+        if (!text.trim()) return false
+        setSteerError(null)
+        try {
+            const resp = await fetch('/api/chat/steer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ steerQueueId, steerText: text.trim() }),
+            })
+            const data = await resp.json()
+            if (!resp.ok || !data.ok) {
+                setSteerError(data.error || 'steer 失败')
+                return false
+            }
+            return true
+        } catch (e: any) {
+            setSteerError(e.message || 'steer 网络错误')
+            return false
+        }
+    }, [steerQueueId, isStreaming])
+
     return {
         messages, status, error, isStreaming,
         streamingBlocks, streamingText,
         sendMessage, cancelStream, regenerate, retry,
         hydrate, clearToDraft, setStatus,
+        steerQueueId, steerError, sendSteer,
     }
 }

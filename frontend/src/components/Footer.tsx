@@ -1,4 +1,4 @@
-import React, { useRef, useCallback } from 'react'
+import React, { useRef, useCallback, useState } from 'react'
 import AIInputEditor, { AIInputEditorRef } from './AIInputEditor'
 import type { SlashCommand, AtReference, UploadedFile, StructuredRequest } from '../types'
 
@@ -13,6 +13,9 @@ interface Props {
     onFileRemove: (index: number) => void
     uploadedFiles: UploadedFile[]
     onCancel: () => void
+    steerQueueId: string | null
+    steerError: string | null
+    onSteer: (text: string) => void
 }
 
 function formatSize(bytes: number): string {
@@ -21,9 +24,10 @@ function formatSize(bytes: number): string {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-const Footer: React.FC<Props> = ({ isStreaming, isRetrying, slashCommands, atReferences, onSend, onFileDrop, onFileSelect, onFileRemove, uploadedFiles, onCancel }) => {
+const Footer: React.FC<Props> = ({ isStreaming, isRetrying, slashCommands, atReferences, onSend, onFileDrop, onFileSelect, onFileRemove, uploadedFiles, onCancel, steerQueueId, steerError, onSteer }) => {
     const editorRef = useRef<AIInputEditorRef>(null)
     const fileInputRef = useRef<HTMLInputElement>(null)
+    const [steerText, setSteerText] = useState('')
 
     const handleSend = useCallback(() => {
         if (editorRef.current) {
@@ -33,6 +37,20 @@ const Footer: React.FC<Props> = ({ isStreaming, isRetrying, slashCommands, atRef
             }
         }
     }, [onSend])
+
+    const handleSteer = useCallback(() => {
+        const text = steerText.trim()
+        if (!text) return
+        onSteer(text)
+        setSteerText('')
+    }, [steerText, onSteer])
+
+    const handleSteerKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault()
+            handleSteer()
+        }
+    }, [handleSteer])
 
     // Expose send function globally for retry/regenerate
     React.useEffect(() => {
@@ -52,11 +70,37 @@ const Footer: React.FC<Props> = ({ isStreaming, isRetrying, slashCommands, atRef
                         正在尝试恢复，请稍候...
                     </div>
                 ) : (
-                    <div className="mx-auto flex max-w-2xl items-center justify-center px-3 py-2.5 sm:px-4">
-                        <button className="stop-btn flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-medium" onClick={onCancel}>
-                            <svg className="stop-icon h-4 w-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
-                            停止生成
-                        </button>
+                    <div className="mx-auto max-w-2xl px-3 py-2 sm:px-4">
+                        {/* steer 输入区 — Agent 流式输出期间可中途插话 */}
+                        {steerQueueId && (
+                            <div className="steer-input-wrapper mb-2">
+                                <div className="steer-input-row flex items-center gap-1.5">
+                                    <input
+                                        className="steer-input flex-1"
+                                        placeholder="中途插话调整 Agent 方向... (Enter 发送)"
+                                        value={steerText}
+                                        onChange={(e) => setSteerText(e.target.value)}
+                                        onKeyDown={handleSteerKeyDown}
+                                    />
+                                    <button
+                                        className="steer-btn shrink-0"
+                                        onClick={handleSteer}
+                                        disabled={!steerText.trim()}
+                                    >
+                                        🔄 插话
+                                    </button>
+                                </div>
+                                {steerError && (
+                                    <div className="steer-error mt-1 text-[11px] text-[var(--red-err)]">⚠️ {steerError}</div>
+                                )}
+                            </div>
+                        )}
+                        <div className="flex items-center justify-center">
+                            <button className="stop-btn flex items-center gap-2 rounded-lg px-5 py-2 text-sm font-medium" onClick={onCancel}>
+                                <svg className="stop-icon h-4 w-4" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" /></svg>
+                                停止生成
+                            </button>
+                        </div>
                     </div>
                 )}
             </div>

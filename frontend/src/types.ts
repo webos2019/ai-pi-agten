@@ -30,6 +30,12 @@ export interface ChatBlock {
     summary?: string
     durationMs?: number
     runId?: string
+    // Steer fields (流式插话)
+    steerId?: string
+    steerText?: string
+    appliedAtStep?: number
+    queueSize?: number
+    reason?: string
 }
 
 export interface ChatMessage {

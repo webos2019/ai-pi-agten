@@ -8,6 +8,7 @@ chunk type 枚举:
   - resource_start / resource_end / resource_error   资源读取
   - recovering / recovery_fallback   错误恢复
   - agent_step_start / agent_step_end   Agent 步骤轨迹
+  - steer_queued / steer_applied / steer_rejected   流式插话 (steer)
 """
 
 import time
@@ -20,8 +21,15 @@ def create_id() -> str:
     return f"{int(time.time() * 1000)}-{uuid.uuid4().hex[:12]}"
 
 
-def create_start_chunk(message_id: str) -> dict[str, Any]:
-    return {"type": "start", "messageId": message_id}
+def create_start_chunk(
+    message_id: str,
+    steer_queue_id: str | None = None,
+) -> dict[str, Any]:
+    """start chunk — 可携带 steerQueueId 供前端发起流式插话"""
+    chunk: dict[str, Any] = {"type": "start", "messageId": message_id}
+    if steer_queue_id:
+        chunk["steerQueueId"] = steer_queue_id
+    return chunk
 
 
 def create_text_chunk(content: str) -> dict[str, Any]:
@@ -163,6 +171,53 @@ def create_recovery_fallback_chunk(message: str, fallback_method: str) -> dict[s
 
 def create_done_chunk() -> dict[str, Any]:
     return {"type": "done"}
+
+
+# ─── Steer Chunks (流式插话) ───────────────────────────
+
+
+def create_steer_queued_chunk(
+    steer_id: str,
+    steer_text: str,
+    queue_size: int,
+) -> dict[str, Any]:
+    """steer 已入队 — 确认客户端的 steer 请求已接收"""
+    return {
+        "type": "steer_queued",
+        "steerId": steer_id,
+        "steerText": steer_text,
+        "queueSize": queue_size,
+    }
+
+
+def create_steer_applied_chunk(
+    steer_id: str,
+    steer_text: str,
+    applied_at_step: int,
+    action_type: str,
+) -> dict[str, Any]:
+    """steer 已应用 — Agent 在步骤边界消费了 steer 指令"""
+    return {
+        "type": "steer_applied",
+        "steerId": steer_id,
+        "steerText": steer_text,
+        "appliedAtStep": applied_at_step,
+        "actionType": action_type,
+    }
+
+
+def create_steer_rejected_chunk(
+    steer_id: str,
+    steer_text: str,
+    reason: str,
+) -> dict[str, Any]:
+    """steer 被拒绝 — 流已结束或 steer 无效"""
+    return {
+        "type": "steer_rejected",
+        "steerId": steer_id,
+        "steerText": steer_text,
+        "reason": reason,
+    }
 
 
 # ─── Agent Step Chunks ──────────────────────────────────

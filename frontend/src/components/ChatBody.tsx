@@ -181,6 +181,48 @@ function renderBlock(block: ChatBlock, key: number): React.ReactNode {
         }
         case 'text':
             return <div key={key} className="text-block" dangerouslySetInnerHTML={{ __html: renderMarkdown(block.content || '') }} />
+        case 'steer_queued':
+            return (
+                <div key={key} className="steer-block steer-queued-block">
+                    <div className="steer-header flex items-center gap-2">
+                        <span className="steer-icon">🔄</span>
+                        <span className="steer-label">转向指令已排队</span>
+                        {block.queueSize != null && (
+                            <span className="steer-badge">队列 {block.queueSize}</span>
+                        )}
+                    </div>
+                    <div className="steer-text">{escapeHtml(block.steerText || '')}</div>
+                </div>
+            )
+        case 'steer_applied':
+            return (
+                <div key={key} className="steer-block steer-applied-block">
+                    <div className="steer-header flex items-center gap-2">
+                        <span className="steer-icon">✅</span>
+                        <span className="steer-label">转向指令已应用</span>
+                        {block.appliedAtStep != null && (
+                            <span className="steer-badge">步骤 {block.appliedAtStep}</span>
+                        )}
+                        {block.actionType && (
+                            <span className="steer-action-type">{block.actionType}</span>
+                        )}
+                    </div>
+                    <div className="steer-text">{escapeHtml(block.steerText || '')}</div>
+                </div>
+            )
+        case 'steer_rejected':
+            return (
+                <div key={key} className="steer-block steer-rejected-block">
+                    <div className="steer-header flex items-center gap-2">
+                        <span className="steer-icon">⚠️</span>
+                        <span className="steer-label">转向指令被拒绝</span>
+                    </div>
+                    <div className="steer-text">{escapeHtml(block.steerText || '')}</div>
+                    {block.reason && (
+                        <div className="steer-reason">{escapeHtml(block.reason)}</div>
+                    )}
+                </div>
+            )
         default:
             return null
     }

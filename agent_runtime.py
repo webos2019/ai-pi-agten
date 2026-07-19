@@ -33,7 +33,9 @@ from stream import (
     create_resource_end_chunk,
     create_agent_step_start_chunk,
     create_agent_step_end_chunk,
+    create_steer_applied_chunk,
 )
+from steer_queue import SteerQueue, SteerEntry
 from deepseek import chat_completion
 
 
@@ -113,6 +115,9 @@ class AgentState:
     # 最终
     final_answer: str = ""
     step_index: int = 0
+
+    # steer 历史 — 用户中途插话的转向指令文本列表
+    steer_history: list[str] = field(default_factory=list)
 
 
 # ─── 确定性质量门: validate_tasklist_structure ─────────
@@ -272,12 +277,16 @@ async def run_tasklist_agent(
     state: AgentState,
     writer: StreamWriter,
     lifecycle: StreamLifecycle,
+    steer_queue: SteerQueue | None = None,
 ) -> None:
     """
     Agent 主流程:
     read_resource -> plan_extract -> 方案就绪度评估 ->
     draft v1 -> validate -> warning 分流 ->
     (revise v2 -> validate) -> 修正效果评估 -> final_answer
+
+    steer 集成: 每个步骤边界检查 steer_queue，消费排队的转向指令，
+    注入到后续步骤的模型 prompt (state.steer_history)。
     """
     step = 0
 
@@ -314,6 +323,7 @@ async def run_tasklist_agent(
                     f"已读取 {filename} ({len(state.version_plan_content)} 字符)",
                     duration_ms=int((time.time() - t0) * 1000))
     step += 1
+    await _check_steer(lifecycle, state, steer_queue, step, "plan_extract")
 
     # ── Step 2: plan_extract ──
     _emit_step_start(lifecycle, state.run_id, step, "plan_extract", "提取版本方案结构")
@@ -327,6 +337,7 @@ async def run_tasklist_agent(
                     f"提取到 {field_count} 个结构字段",
                     duration_ms=int((time.time() - t0) * 1000))
     step += 1
+    await _check_steer(lifecycle, state, steer_queue, step, "plan_readiness")
 
     # ── Step 2.5: 方案就绪度评估 ──
     _emit_step_start(lifecycle, state.run_id, step, "plan_readiness", "方案就绪度评估")
@@ -360,6 +371,7 @@ async def run_tasklist_agent(
                     readiness_summary,
                     duration_ms=int((time.time() - t0) * 1000))
     step += 1
+    await _check_steer(lifecycle, state, steer_queue, step, "draft_tasklist")
 
     # ── Step 3: draft_tasklist v1 ──
     _emit_step_start(lifecycle, state.run_id, step, "draft_tasklist", "生成任务清单草稿 v1")
@@ -375,6 +387,7 @@ async def run_tasklist_agent(
                     "草稿 v1 已生成",
                     duration_ms=int((time.time() - t0) * 1000))
     step += 1
+    await _check_steer(lifecycle, state, steer_queue, step, "validate_tasklist")
 
     # ── Step 4: validate_tasklist v1（含 Warning 分流）──
     _emit_step_start(lifecycle, state.run_id, step, "validate_tasklist", "结构校验 v1（Warning 分流）")
@@ -391,6 +404,7 @@ async def run_tasklist_agent(
                     v1_summary,
                     duration_ms=int((time.time() - t0) * 1000))
     step += 1
+    await _check_steer(lifecycle, state, steer_queue, step, "revise_tasklist")
 
     # ── Step 5: revise_tasklist（仅阻断性问题才修正，warning 跳过）──
     if state.validation_v1.should_revise and state.revision_count < 1:
@@ -410,6 +424,7 @@ async def run_tasklist_agent(
                         "修正版 v2 已生成",
                         duration_ms=int((time.time() - t0) * 1000))
         step += 1
+        await _check_steer(lifecycle, state, steer_queue, step, "validate_tasklist_v2")
 
         # ── Step 6: validate_tasklist v2 ──
         _emit_step_start(lifecycle, state.run_id, step, "validate_tasklist", "结构校验 v2")
@@ -422,6 +437,7 @@ async def run_tasklist_agent(
                         state.validation_v2.summary,
                         duration_ms=int((time.time() - t0) * 1000))
         step += 1
+        await _check_steer(lifecycle, state, steer_queue, step, "revision_eval")
 
         # ── Step 6.5: 修正效果评估 ──
         _emit_step_start(lifecycle, state.run_id, step, "revision_eval", "修正效果评估")
@@ -444,6 +460,7 @@ async def run_tasklist_agent(
         step += 1
 
     # ── Step 7: final_answer ──
+    await _check_steer(lifecycle, state, steer_queue, step, "final_answer")
     _emit_step_start(lifecycle, state.run_id, step, "final_answer", "生成最终输出")
     t0 = time.time()
 
@@ -457,6 +474,44 @@ async def run_tasklist_agent(
 
 
 # ─── 内部辅助 ─────────────────────────────────────────
+
+async def _check_steer(
+    lifecycle: StreamLifecycle,
+    state: AgentState,
+    steer_queue: SteerQueue | None,
+    step_index: int,
+    action_type: str,
+) -> list[SteerEntry]:
+    """在步骤边界检查 steer 队列，消费并应用所有排队的转向指令。
+
+    对每条 steer:
+    1. 标记为已应用 (steer_queue.mark_applied)
+    2. 发送 steer_applied chunk 通知前端
+    3. 追加到 state.steer_history，供后续模型调用注入 prompt
+    4. 发送一条可见文本提示用户 steer 已接收
+    """
+    if not steer_queue:
+        return []
+
+    steers = await steer_queue.drain()
+    if not steers:
+        return []
+
+    for s in steers:
+        steer_queue.mark_applied(s, step_index, action_type)
+        lifecycle.write_chunk(create_steer_applied_chunk(
+            steer_id=s.id,
+            steer_text=s.text,
+            applied_at_step=step_index,
+            action_type=action_type,
+        ))
+        state.steer_history.append(s.text)
+        lifecycle.write_chunk(create_text_chunk(
+            f"\n> 🔄 **已接收转向指令**: {s.text}\n\n"
+        ))
+
+    return steers
+
 
 def _emit_step_start(
     lifecycle: StreamLifecycle, run_id: str, step_index: int,
@@ -490,7 +545,11 @@ async def _generate_tasklist_draft(
     is_revision: bool = False,
     issues: str | None = None,
 ) -> str:
-    """调用模型生成 tasklist 草稿"""
+    """调用模型生成 tasklist 草稿
+
+    steer 集成: 如果 state.steer_history 非空，把用户中途插话的转向指令
+    注入到 user prompt，引导模型据此调整草稿内容。
+    """
     system_prompt = (
         "你是一个任务清单生成助手。根据版本方案的结构化依据，生成一份可执行的任务清单（tasklist）草稿。\n\n"
         "格式要求:\n"
@@ -509,6 +568,14 @@ async def _generate_tasklist_draft(
         user_content += (
             f"\n\n上一版草稿存在以下阻断性问题，请修正:\n{issues}\n"
             "请确保修正后的草稿通过结构校验。"
+        )
+
+    # ── steer 注入: 把用户中途插话的转向指令注入 prompt ──
+    if state.steer_history:
+        steer_lines = "\n".join(f"  - {s}" for s in state.steer_history)
+        user_content += (
+            f"\n\n⚠️ 用户中途插话的转向指令（请据此调整草稿内容和侧重点）:\n{steer_lines}\n"
+            "请在草稿中体现这些调整方向，不必在输出中重复指令本身。"
         )
 
     messages = [

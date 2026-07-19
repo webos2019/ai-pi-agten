@@ -5,13 +5,22 @@ from typing import Any, AsyncIterator
 
 from chat_session import create_chat_session
 from chat_orchestrator import orchestrate_chat
-from stream import StreamWriter, create_ndjson_stream
+from stream import StreamWriter, create_ndjson_stream, create_id
+from steer_queue import active_streams
 from thread_state import (
     thread_store,
     session_store,
     compact_thread,
     TextCollectingWriter,
 )
+from user_memory import user_memory_store, get_memory_namespace
+from memory_retrieval import (
+    retrieve_relevant_user_memories,
+    build_memory_context_messages,
+    is_user_memory_context_eligible,
+    MemoryRetrievalConfig,
+)
+from memory_extractor import extract_and_store_memories
 
 
 def resolve_skill(explicit_skill: str | None, user_message: str) -> str:
@@ -98,6 +107,27 @@ class ChatService:
         # ── 构建模型上下文 ──
         if thread_state:
             context_messages = thread_state.build_model_context()
+
+            # ── 长期记忆语义召回（普通聊天才触发）──
+            # 借鉴掘金文章 AI Mind v0.4.6:
+            #   只有 ordinary_chat 才触发，/tasklist Agent 路径不触发
+            #   语义召回失败不影响聊天（降级为 0 条记忆注入）
+            if session_id and is_user_memory_context_eligible(user_message, structured):
+                try:
+                    memory_namespace = get_memory_namespace(session_id)
+                    memory_config = MemoryRetrievalConfig.create_default()
+                    selected_memories = await retrieve_relevant_user_memories(
+                        user_memory_store,
+                        memory_namespace,
+                        user_message,
+                        memory_config,
+                    )
+                    memory_context = build_memory_context_messages(selected_memories)
+                    context_messages.extend(memory_context)
+                except Exception:
+                    # 语义召回失败，降级为无记忆注入，聊天继续
+                    pass
+
             if current_user_msg:
                 context_messages.append(current_user_msg)
             session = create_chat_session(resolved_skill, context_messages)
@@ -109,6 +139,13 @@ class ChatService:
         agent_context: dict[str, Any] = {"clientIP": client_ip_req}
         if structured:
             agent_context["structured"] = structured
+
+        # ── steer 队列注册 ──
+        # 每个流关联一个 SteerQueue，供前端流式插话
+        steer_queue_id = f"{resolved_conversation_id or 'anon'}:{create_id()}"
+        steer_queue = active_streams.register(steer_queue_id)
+        agent_context["steer_queue"] = steer_queue
+        agent_context["steer_queue_id"] = steer_queue_id
 
         # ── 捕获流开始时的会话归属 (写入不串线) ──
         write_conversation_id = resolved_conversation_id
@@ -136,8 +173,37 @@ class ChatService:
                     if reg:
                         reg.touch(write_conversation_id)
 
-        async for chunk_line in create_ndjson_stream(on_start):
-            yield chunk_line
+            # ── 长期记忆提取（回合后，失败不影响聊天）──
+            # 借鉴掘金文章 AI Mind v0.4.6:
+            #   模型提取候选记忆 → 程序校验 → store.put(['text','tags'])
+            #   只有普通聊天才提取，/tasklist Agent 路径不提取
+            if (
+                write_session_id
+                and not collector.has_error()
+                and is_user_memory_context_eligible(user_message, structured)
+            ):
+                final_text = collector.get_collected_text()
+                if final_text.strip():
+                    try:
+                        memory_namespace = get_memory_namespace(write_session_id)
+                        await extract_and_store_memories(
+                            user_memory_store,
+                            memory_namespace,
+                            user_message,
+                            final_text,
+                            write_conversation_id,
+                        )
+                    except Exception:
+                        # 记忆提取失败，静默跳过，不影响聊天
+                        pass
+
+        try:
+            async for chunk_line in create_ndjson_stream(on_start):
+                yield chunk_line
+        finally:
+            # 注销 steer 队列，拒绝所有未处理的 steer
+            # 未处理的 steer 会在 /api/chat/steer 的 enqueue 中返回失败
+            active_streams.unregister(steer_queue_id)
 
 
 def create_chat_service() -> ChatService:

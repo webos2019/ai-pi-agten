@@ -188,6 +188,9 @@ export default function App() {
                     onFileRemove={handleFileRemove}
                     uploadedFiles={uploadedFiles}
                     onCancel={chat.cancelStream}
+                    steerQueueId={chat.steerQueueId}
+                    steerError={chat.steerError}
+                    onSteer={chat.sendSteer}
                 />
             </div>
         </div>

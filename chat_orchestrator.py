@@ -127,7 +127,10 @@ async def _try_agent_entry(
         version_plan_uri=version_plan_uri,
     )
 
-    await run_tasklist_agent(state, writer, lifecycle)
+    # 从 context 获取 steer 队列（流式插话）
+    steer_queue = context.get("steer_queue")
+
+    await run_tasklist_agent(state, writer, lifecycle, steer_queue)
     lifecycle.emit_done_once()
     return True
 
@@ -172,10 +175,15 @@ async def orchestrate_chat(
     writer: StreamWriter,
     context: dict[str, Any],
 ) -> None:
-    """主编排函数 - 带错误恢复"""
+    """主编排函数 - 带错误恢复
+
+    steer 集成: 从 context 读取 steer_queue_id，写入 start chunk，
+    前端据此发起流式插话 (/api/chat/steer)。
+    """
     lifecycle = StreamLifecycle(writer)
     message_id = create_id()
-    lifecycle.emit_start_once(message_id)
+    steer_queue_id = context.get("steer_queue_id")
+    lifecycle.emit_start_once(message_id, steer_queue_id)
 
     recovery_attempts = 0
 
