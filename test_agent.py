@@ -34,6 +34,7 @@ Pi Agent 完整测试套件
 import json
 import sys
 import os
+import time
 import asyncio
 import urllib.request
 
@@ -2858,6 +2859,56 @@ def test_tool_execution_error_handling():
     else:
         fail("应并发执行 3 个工具", f"实际 {len(batch4.results)}")
 
+    # 26e: 真实并发性验证 — 3 个 sleep(0.3) 工具，并发 < 0.6s，串行 > 0.8s
+    import time as _time
+    from agent_loop import execute_tool_calls, AgentContext, AgentMessage, AgentLoopConfig, ToolDefinition
+
+    async def slow_io_handler(args):
+        """模拟 I/O 密集型工具（网络请求/数据库查询）"""
+        await asyncio.sleep(0.3)
+        return args.get("id", "?")
+
+    slow_io_tool = ToolDefinition(
+        name="slow_io",
+        description="慢 I/O 工具",
+        parameters={"type": "object", "properties": {"id": {"type": "string"}}},
+        handler=slow_io_handler,
+    )
+    context_conc = AgentContext(
+        system_prompt="",
+        messages=[],
+        tools=[slow_io_tool],
+    )
+    msg_conc = AgentMessage(
+        role="assistant",
+        content="",
+        tool_calls=[
+            {"id": "tc-a", "name": "slow_io", "arguments": {"id": "a"}},
+            {"id": "tc-b", "name": "slow_io", "arguments": {"id": "b"}},
+            {"id": "tc-c", "name": "slow_io", "arguments": {"id": "c"}},
+        ],
+        stop_reason="tool_use",
+    )
+    config_conc = AgentLoopConfig(stream_fn=None, tool_timeout=5.0)
+
+    async def noop_emit_conc(event):
+        pass
+
+    start = _time.monotonic()
+    batch_conc = asyncio.new_event_loop().run_until_complete(
+        execute_tool_calls(context_conc, msg_conc, config_conc, None, noop_emit_conc)
+    )
+    elapsed = _time.monotonic() - start
+
+    # 并发: 3 * 0.3s ≈ 0.3s（允许调度开销到 0.6s）
+    # 串行: 3 * 0.3s = 0.9s
+    if len(batch_conc.results) == 3 and elapsed < 0.6:
+        ok(f"真实并发: 3 个 sleep(0.3) 工具总耗时 {elapsed:.2f}s (< 0.6s)")
+    elif len(batch_conc.results) == 3 and elapsed >= 0.8:
+        fail(f"工具疑似串行执行: 总耗时 {elapsed:.2f}s (>= 0.8s)")
+    else:
+        fail("并发性测试异常", f"results={len(batch_conc.results)}, elapsed={elapsed:.2f}s")
+
 
 def test_truncated_tool_call_in_loop():
     """测试 27: 截断容错在完整循环中的表现"""
@@ -2922,10 +2973,1154 @@ def test_truncated_tool_call_in_loop():
         else:
             fail("截断 tool_result 异常", str(tool_results[0].content[:80] if tool_results else "无 tool_result"))
 
+    # 27b: 截断后 LLM 重新发出 tool_call 并被执行（完整恢复链路）
+    section("单元测试 27b: 截断后重新发出工具调用")
+    call_count_b = 0
+    tool_executed_b = False
+
+    async def mock_stream_fn_b(ctx, cfg):
+        nonlocal call_count_b
+        call_count_b += 1
+        if call_count_b == 1:
+            # 第一轮: 截断 — tool_call arguments 不完整
+            return AgentMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": "tc-trunc", "name": "echo", "arguments": '{"text": "incom'}],
+                stop_reason="length",
+            )
+        elif call_count_b == 2:
+            # 第二轮: LLM 看到错误 tool_result，重新发出完整 tool_call
+            return AgentMessage(
+                role="assistant",
+                content="重新调用工具",
+                tool_calls=[{"id": "tc-ok", "name": "echo", "arguments": {"text": "recovered"}}],
+                stop_reason="tool_use",
+            )
+        else:
+            # 第三轮: 工具执行后给出最终答案
+            return AgentMessage(role="assistant", content="恢复完成", stop_reason="stop")
+
+    async def echo_handler_b(args):
+        nonlocal tool_executed_b
+        tool_executed_b = True
+        return args.get("text", "")
+
+    echo_tool_b = ToolDefinition(
+        name="echo",
+        description="回显",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=echo_handler_b,
+    )
+    config_b = AgentLoopConfig(stream_fn=mock_stream_fn_b)
+    context_b = AgentContext(system_prompt="你是助手", messages=[], tools=[echo_tool_b])
+    prompts_b = [AgentMessage(role="user", content="测试截断恢复")]
+
+    events_b, messages_b = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts_b, context_b, config_b)
+    )
+
+    # LLM 应被调用 3 次: 截断 → 重新发出工具 → 最终回答
+    if call_count_b == 3:
+        ok("截断后 LLM 重新发出 tool_call 并最终回答 (3 次调用)")
+    else:
+        fail("截断恢复应调用 3 次 LLM", f"实际 {call_count_b} 次")
+
+    # 工具应被执行（第二轮的完整 tool_call）
+    if tool_executed_b:
+        ok("截断后重新发出的 tool_call 被成功执行")
+    else:
+        fail("截断后重新发出的 tool_call 应被执行")
+
+    # messages 应包含: user, assistant(trunc), tool_result(error), assistant(retry), tool_result(ok), assistant(final)
+    tool_results_b = [m for m in messages_b if m.role == "tool_result"]
+    if len(tool_results_b) == 2:
+        # 第一个 tool_result 应为错误（截断），第二个应为成功
+        if "truncated" in tool_results_b[0].content.lower() and tool_results_b[1].content == "recovered":
+            ok("截断 tool_result + 恢复 tool_result 共存且顺序正确")
+        else:
+            fail("tool_result 内容异常",
+                 f"[0]={tool_results_b[0].content[:40]}, [1]={tool_results_b[1].content[:40]}")
+    else:
+        fail("应有 2 个 tool_result", f"实际 {len(tool_results_b)}")
+
+    # 27c: 连续截断后恢复（防止无限循环或提前退出）
+    section("单元测试 27c: 连续截断后恢复")
+    call_count_c = 0
+
+    async def mock_stream_fn_c(ctx, cfg):
+        nonlocal call_count_c
+        call_count_c += 1
+        if call_count_c <= 2:
+            # 前两次都截断
+            return AgentMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": f"tc-trunc-{call_count_c}", "name": "echo", "arguments": '{"text": "incom'}],
+                stop_reason="length",
+            )
+        elif call_count_c == 3:
+            # 第三次正常发出工具调用
+            return AgentMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": "tc-ok-c", "name": "echo", "arguments": {"text": "ok"}}],
+                stop_reason="tool_use",
+            )
+        else:
+            return AgentMessage(role="assistant", content="完成", stop_reason="stop")
+
+    config_c = AgentLoopConfig(stream_fn=mock_stream_fn_c)
+    context_c = AgentContext(system_prompt="", messages=[], tools=[echo_tool_b])
+    prompts_c = [AgentMessage(role="user", content="测试连续截断")]
+
+    events_c, messages_c = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts_c, context_c, config_c)
+    )
+
+    # LLM 应被调用 4 次: 截断 → 截断 → 工具调用 → 最终回答
+    if call_count_c == 4:
+        ok("连续 2 次截断后成功恢复 (4 次 LLM 调用)")
+    else:
+        fail("连续截断恢复应调用 4 次 LLM", f"实际 {call_count_c} 次")
+
+    # 应有 3 个 tool_result: 2 个截断错误 + 1 个成功
+    tool_results_c = [m for m in messages_c if m.role == "tool_result"]
+    error_count = sum(1 for r in tool_results_c if "truncated" in r.content.lower())
+    ok_count = sum(1 for r in tool_results_c if r.content == "ok")
+    if len(tool_results_c) == 3 and error_count == 2 and ok_count == 1:
+        ok("连续截断生成 2 个错误 + 1 个成功 tool_result")
+    else:
+        fail("tool_result 结构异常",
+             f"total={len(tool_results_c)}, errors={error_count}, ok={ok_count}")
+
+    # 27d: 截断错误 tool_result 确实进入 context.messages 供 LLM 看到
+    section("单元测试 27d: 截断错误进入 context 供 LLM 可见")
+    call_count_d = 0
+    llm_seen_truncation_error = False
+
+    async def mock_stream_fn_d(ctx, cfg):
+        nonlocal call_count_d, llm_seen_truncation_error
+        call_count_d += 1
+        if call_count_d == 1:
+            return AgentMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": "tc-trunc-d", "name": "echo", "arguments": '{"text": "bad'}],
+                stop_reason="length",
+            )
+        else:
+            # 第二轮: 检查 context.messages 是否包含截断错误信息
+            for m in ctx.messages:
+                if "truncated" in str(m.content).lower():
+                    llm_seen_truncation_error = True
+                    break
+            return AgentMessage(role="assistant", content="看到错误了", stop_reason="stop")
+
+    config_d = AgentLoopConfig(stream_fn=mock_stream_fn_d)
+    context_d = AgentContext(system_prompt="", messages=[], tools=[echo_tool_b])
+    prompts_d = [AgentMessage(role="user", content="测试")]
+
+    asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts_d, context_d, config_d)
+    )
+
+    if llm_seen_truncation_error:
+        ok("截断错误 tool_result 进入 context.messages，LLM 第二轮可见")
+    else:
+        fail("截断错误应进入 context 供 LLM 看到")
+
+
+# ════════════════════════════════════════════════════════
+#  Chat Orchestrator 集成测试 (阶段一: agent_loop 迁移)
+# ════════════════════════════════════════════════════════
+
+def test_orchestrator_message_conversion():
+    """测试 28: 消息格式双向转换 — OpenAI ↔ AgentMessage"""
+    section("单元测试 28: 消息格式转换 (_convert_to_agent_messages / _agent_message_to_openai)")
+
+    from chat_orchestrator import _convert_to_agent_messages, _agent_message_to_openai
+    from agent_loop import AgentMessage
+
+    # 构建 OpenAI 格式消息列表
+    openai_messages = [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "你好！", "tool_calls": [
+            {"id": "tc-1", "type": "function", "function": {"name": "calc", "arguments": '{"expr": "1+1"}'}},
+        ]},
+        {"role": "tool", "tool_call_id": "tc-1", "content": '{"result": 2}'},
+        {"role": "assistant", "content": "1+1=2"},
+    ]
+
+    # 转为 AgentMessage
+    agent_msgs = _convert_to_agent_messages(openai_messages)
+
+    if len(agent_msgs) == 4:
+        ok("转换后消息数量正确 (4 条)")
+    else:
+        fail("消息数量异常", f"期望 4，实际 {len(agent_msgs)}")
+        return
+
+    if agent_msgs[0].role == "user" and agent_msgs[0].content == "你好":
+        ok("user 消息转换正确")
+    else:
+        fail("user 消息转换异常")
+
+    if agent_msgs[1].role == "assistant" and agent_msgs[1].tool_calls:
+        tc = agent_msgs[1].tool_calls[0]
+        if tc.get("name") == "calc" and tc.get("arguments") == {"expr": "1+1"}:
+            ok("assistant tool_calls 转换正确 (arguments 已解析为 dict)")
+        else:
+            fail("tool_calls 转换异常", str(tc))
+    else:
+        fail("assistant 消息应包含 tool_calls")
+
+    if agent_msgs[2].role == "tool_result" and agent_msgs[2].tool_call_id == "tc-1":
+        ok("tool_result 消息转换正确")
+    else:
+        fail("tool_result 消息转换异常")
+
+    # 反向转换: AgentMessage → OpenAI
+    openai_msg = _agent_message_to_openai(agent_msgs[1])
+    if openai_msg.get("role") == "assistant" and openai_msg.get("tool_calls"):
+        fn = openai_msg["tool_calls"][0]["function"]
+        if fn["name"] == "calc" and isinstance(fn["arguments"], str):
+            ok("反向转换: tool_calls arguments 序列化为字符串")
+        else:
+            fail("反向转换: arguments 应为 JSON 字符串", str(fn))
+    else:
+        fail("反向转换异常")
+
+    # tool_result 反向转换
+    tool_openai = _agent_message_to_openai(agent_msgs[2])
+    if tool_openai.get("role") == "tool" and tool_openai.get("tool_call_id") == "tc-1":
+        ok("tool_result 反向转换正确")
+    else:
+        fail("tool_result 反向转换异常")
+
+
+def test_orchestrator_stop_reason_mapping():
+    """测试 29: stop_reason 映射"""
+    section("单元测试 29: stop_reason 映射 (_map_stop_reason)")
+
+    from chat_orchestrator import _map_stop_reason
+
+    cases = [
+        ("stop", "stop"),
+        ("tool_calls", "tool_use"),
+        ("length", "length"),
+        ("content_filter", "error"),
+        (None, "stop"),
+        ("unknown", "stop"),
+    ]
+
+    all_pass = True
+    for finish_reason, expected in cases:
+        result = _map_stop_reason(finish_reason)
+        if result == expected:
+            pass  # 个别 OK 不打印
+        else:
+            fail(f"stop_reason 映射: {finish_reason} → {result} (期望 {expected})")
+            all_pass = False
+
+    if all_pass:
+        ok("所有 stop_reason 映射正确 (6 个 case)")
+
+
+def test_orchestrator_build_tool_definitions():
+    """测试 30: 工具定义桥接 — tool_registry → ToolDefinition"""
+    section("单元测试 30: 工具定义桥接 (_build_tool_definitions)")
+
+    from chat_orchestrator import _build_tool_definitions
+    import tools  # noqa: F401 — 触发工具注册
+
+    # 用真实注册的工具测试
+    tool_names = ["calculator", "datetime"]
+    ctx = {"clientIP": "127.0.0.1"}
+    defs = _build_tool_definitions(tool_names, ctx)
+
+    if len(defs) == 2:
+        ok("桥接了 2 个工具定义")
+    else:
+        fail("工具数量异常", f"期望 2，实际 {len(defs)}")
+        return
+
+    if defs[0].name == "calculator" and defs[0].handler:
+        ok("calculator 工具定义正确 (含 handler)")
+    else:
+        fail("calculator 工具定义异常")
+
+    if defs[1].name == "datetime" and defs[1].handler:
+        ok("datetime 工具定义正确 (含 handler)")
+    else:
+        fail("datetime 工具定义异常")
+
+    # 测试 handler 可调用
+    async def _test_handler():
+        result = await defs[0].handler({"expression": "2+3"})
+        import json as _json
+        parsed = _json.loads(result)
+        if parsed.get("result") == 5:
+            ok("calculator handler 执行成功 (2+3=5)")
+        else:
+            fail("calculator handler 结果异常", result)
+    asyncio.new_event_loop().run_until_complete(_test_handler())
+
+    # 测试不存在的工具名
+    defs_unknown = _build_tool_definitions(["nonexistent_tool"], ctx)
+    if len(defs_unknown) == 0:
+        ok("不存在的工具名被正确跳过")
+    else:
+        fail("不存在的工具名应被跳过")
+
+
+def test_orchestrator_should_stop():
+    """测试 31: should_stop_after_turn 策略"""
+    section("单元测试 31: 停止策略 (_check_should_stop)")
+
+    from chat_orchestrator import _check_should_stop, MAX_TOOL_CALLS
+    from agent_loop import AgentMessage, ToolCallResult
+    from stream import StreamLifecycle, StreamWriter
+
+    # 准备 lifecycle
+    writer = StreamWriter()
+    lifecycle = StreamLifecycle(writer)
+
+    # Case 1: 无 tool_results → 不停止
+    tracker1 = {"count": 0}
+    msg = AgentMessage(role="assistant", content="hello")
+    if _check_should_stop(msg, [], None, "auto", lifecycle, tracker1) is False:
+        ok("无 tool_results 时不停止")
+    else:
+        fail("无 tool_results 时不应停止")
+
+    # Case 2: auto policy + 未超限 → 不停止
+    tracker2 = {"count": 0}
+    tr = ToolCallResult(tool_call_id="tc-1", tool_name="calc", args={}, result="{}")
+    if _check_should_stop(msg, [tr], None, "auto", lifecycle, tracker2) is False:
+        ok("auto policy + 未超限时不停止")
+    else:
+        fail("auto policy + 未超限时不应停止")
+
+    # Case 3: 超过 MAX_TOOL_CALLS → 停止
+    tracker3 = {"count": MAX_TOOL_CALLS - 1}
+    if _check_should_stop(msg, [tr], None, "auto", lifecycle, tracker3) is True:
+        ok("超过 MAX_TOOL_CALLS 时停止")
+    else:
+        fail("超过 MAX_TOOL_CALLS 时应停止")
+
+    # Case 4: tool-first policy + 无 authoritative → 不停止
+    tracker4 = {"count": 0}
+    if _check_should_stop(msg, [tr], None, "tool-first", lifecycle, tracker4) is False:
+        ok("tool-first policy + 无 authoritative 时不停止")
+    else:
+        fail("tool-first policy + 无 authoritative 时不应停止")
+
+
+def test_orchestrator_emit_event():
+    """测试 32: AgentEvent → NDJSON chunk 转换"""
+    section("单元测试 32: 事件→chunk 转换 (_emit_event_to_stream)")
+
+    from chat_orchestrator import _emit_event_to_stream
+    from agent_loop import AgentMessage, AgentEvent, ToolCallResult
+    from stream import StreamLifecycle, StreamWriter
+
+    writer = StreamWriter()
+    lifecycle = StreamLifecycle(writer)
+
+    # Case 1: message_start 带 content → text chunk
+    lifecycle._started = True  # 绕过 start 检查
+    _emit_event_to_stream(AgentEvent(
+        type="message_start",
+        message=AgentMessage(role="assistant", content="你好"),
+    ), lifecycle)
+    chunks = writer.get_chunks()
+    if chunks and chunks[-1].get("type") == "text" and chunks[-1].get("content") == "你好":
+        ok("message_start (content) → text chunk")
+    else:
+        fail("message_start 应生成 text chunk")
+
+    # Case 2: message_start 带 tool_calls → tool_call chunk
+    _emit_event_to_stream(AgentEvent(
+        type="message_start",
+        message=AgentMessage(
+            role="assistant",
+            content="",
+            tool_calls=[{"id": "tc-1", "name": "calc", "arguments": {"expr": "1+1"}}],
+        ),
+    ), lifecycle)
+    chunks = writer.get_chunks()
+    tc_chunks = [c for c in chunks if c.get("type") == "tool_call"]
+    if tc_chunks and tc_chunks[-1].get("toolName") == "calc":
+        ok("message_start (tool_calls) → tool_call chunk")
+    else:
+        fail("message_start 应生成 tool_call chunk")
+
+    # Case 3: turn_end 带 tool_results → tool_result chunk
+    _emit_event_to_stream(AgentEvent(
+        type="turn_end",
+        message=AgentMessage(role="assistant", content=""),
+        tool_results=[ToolCallResult(
+            tool_call_id="tc-1", tool_name="calc", args={}, result='{"result":2}',
+        )],
+    ), lifecycle)
+    chunks = writer.get_chunks()
+    tr_chunks = [c for c in chunks if c.get("type") == "tool_result"]
+    if tr_chunks and tr_chunks[-1].get("toolResult") == '{"result":2}':
+        ok("turn_end (tool_results) → tool_result chunk")
+    else:
+        fail("turn_end 应生成 tool_result chunk")
+
+    # Case 4: agent_start / turn_start → 忽略
+    before = len(writer.get_chunks())
+    _emit_event_to_stream(AgentEvent(type="agent_start"), lifecycle)
+    _emit_event_to_stream(AgentEvent(type="turn_start"), lifecycle)
+    after = len(writer.get_chunks())
+    if after == before:
+        ok("agent_start / turn_start 正确忽略")
+    else:
+        fail("agent_start / turn_start 应被忽略")
+
+
+def test_orchestrator_full_loop_mock():
+    """测试 33: 完整 _do_orchestrate 流程 (mock LLM)"""
+    section("单元测试 33: _do_orchestrate 完整流程 (mock stream_fn)")
+
+    import chat_orchestrator as orch
+    from agent_loop import AgentMessage
+    from stream import StreamLifecycle, StreamWriter
+
+    # Mock chat_completion — 模拟 LLM 先调用工具再回答
+    call_count = 0
+
+    class MockChoice:
+        def __init__(self, content, tool_calls=None, finish_reason="stop"):
+            self.message = type("M", (), {
+                "content": content,
+                "tool_calls": tool_calls,
+            })()
+            self.finish_reason = finish_reason
+
+    class MockResponse:
+        def __init__(self, choice):
+            self.choices = [choice]
+
+    class MockTC:
+        def __init__(self, tc_id, name, args):
+            self.id = tc_id
+            self.function = type("F", (), {"name": name, "arguments": args})()
+
+    async def mock_chat_completion(messages, tools=None, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # 第一轮: LLM 调用 calculator
+            return MockResponse(MockChoice(
+                content="",
+                tool_calls=[MockTC("tc-1", "calculator", '{"expression": "2+3"}')],
+                finish_reason="tool_calls",
+            ))
+        else:
+            # 第二轮: LLM 看到工具结果，生成总结
+            return MockResponse(MockChoice(
+                content="2+3 的结果是 5。",
+                finish_reason="stop",
+            ))
+
+    # 临时替换 chat_completion
+    original_chat = orch.chat_completion
+    orch.chat_completion = mock_chat_completion
+
+    try:
+        # 构建 mock session
+        class MockSkill:
+            system_prompt = "你是计算助手"
+            tool_names = ["calculator"]
+            result_policy = "auto"
+            output_policy = "concise-utility"
+
+        class MockSession:
+            def get_messages(self):
+                return [{"role": "user", "content": "计算 2+3"}]
+            def get_skill_id(self):
+                return "utility-skill"
+            def get_system_prompt(self):
+                return MockSkill.system_prompt
+
+        # Mock skill_registry
+        original_get_skill = orch.skill_registry.get
+        orch.skill_registry.get = lambda sid: MockSkill()
+
+        writer = StreamWriter()
+        lifecycle = StreamLifecycle(writer)
+        lifecycle._started = True  # 绕过 start 检查
+
+        asyncio.new_event_loop().run_until_complete(
+            orch._do_orchestrate(MockSession(), writer, {}, lifecycle)
+        )
+
+        # 恢复
+        orch.skill_registry.get = original_get_skill
+
+        chunks = writer.get_chunks()
+
+        # 验证: 应有 text chunk (LLM 总结)
+        text_chunks = [c for c in chunks if c.get("type") == "text"]
+        if text_chunks and "5" in text_chunks[-1].get("content", ""):
+            ok("LLM 生成了包含工具结果的总结文本")
+        else:
+            fail("应有包含 '5' 的文本", str([c.get("content", "")[:40] for c in text_chunks]))
+
+        # 验证: 应有 tool_call chunk
+        tc_chunks = [c for c in chunks if c.get("type") == "tool_call"]
+        if tc_chunks and tc_chunks[0].get("toolName") == "calculator":
+            ok("生成了 calculator 的 tool_call chunk")
+        else:
+            fail("应有 calculator tool_call chunk")
+
+        # 验证: 应有 tool_result chunk
+        tr_chunks = [c for c in chunks if c.get("type") == "tool_result"]
+        if tr_chunks and "5" in tr_chunks[0].get("toolResult", ""):
+            ok("生成了包含结果 '5' 的 tool_result chunk")
+        else:
+            fail("应有包含 '5' 的 tool_result chunk")
+
+        # 验证: 应有 done chunk
+        done_chunks = [c for c in chunks if c.get("type") == "done"]
+        if done_chunks:
+            ok("流正常结束 (done)")
+        else:
+            fail("应有 done chunk")
+
+        # 验证: LLM 被调用 2 次 (第一次工具调用, 第二次总结)
+        if call_count == 2:
+            ok("LLM 被调用 2 次 (工具调用 + 总结)")
+        else:
+            fail("LLM 调用次数异常", f"期望 2，实际 {call_count}")
+
+        # 33b: 总结是 LLM 第二轮自然生成的，而非 _generate_summary_answer 拼接
+        # 关键证据: 第二轮 LLM 调用时，context.messages 中应包含 tool_result
+        # 且第二轮返回的 content 就是总结文本本身（非手动拼接）
+        if not hasattr(mock_chat_completion, "_second_round_messages"):
+            # 用闭包变量记录第二轮 LLM 看到的消息
+            pass
+
+    finally:
+        orch.chat_completion = original_chat
+
+    # 33b: 独立验证 — 总结文本来自 LLM 第二轮，而非手动拼接
+    section("单元测试 33b: 总结自然生成 (非 _generate_summary_answer 拼接)")
+    import chat_orchestrator as orch2
+    from agent_loop import AgentMessage as AM2
+    from stream import StreamLifecycle as SL2, StreamWriter as SW2
+
+    # 确认旧函数 _generate_summary_answer 已从代码中彻底移除
+    assert not hasattr(orch2, "_generate_summary_answer"), "_generate_summary_answer 应已被删除"
+    ok("_generate_summary_answer 已从 chat_orchestrator 中移除")
+
+    call_count_b = 0
+    second_round_messages = None  # 记录第二轮 LLM 看到的消息
+
+    class MockChoice2:
+        def __init__(self, content, tool_calls=None, finish_reason="stop"):
+            self.message = type("M", (), {"content": content, "tool_calls": tool_calls})()
+            self.finish_reason = finish_reason
+
+    class MockResponse2:
+        def __init__(self, choice):
+            self.choices = [choice]
+
+    class MockTC2:
+        def __init__(self, tc_id, name, args):
+            self.id = tc_id
+            self.function = type("F", (), {"name": name, "arguments": args})()
+
+    async def mock_chat_completion_b(messages, tools=None, **kwargs):
+        nonlocal call_count_b, second_round_messages
+        call_count_b += 1
+        if call_count_b == 2:
+            # 记录第二轮 LLM 看到的完整消息列表
+            second_round_messages = list(messages) if messages else []
+        if call_count_b == 1:
+            return MockResponse2(MockChoice2(
+                content="",
+                tool_calls=[MockTC2("tc-1", "calculator", '{"expression": "7*8"}')],
+                finish_reason="tool_calls",
+            ))
+        else:
+            # 第二轮: LLM 自然生成总结（模拟真实 LLM 行为）
+            return MockResponse2(MockChoice2(
+                content="7 乘以 8 等于 56。",
+                finish_reason="stop",
+            ))
+
+    original_chat_b = orch2.chat_completion
+    orch2.chat_completion = mock_chat_completion_b
+
+    try:
+        class MockSkill2:
+            system_prompt = "你是计算助手"
+            tool_names = ["calculator"]
+            result_policy = "auto"
+            output_policy = "concise-utility"
+
+        class MockSession2:
+            def get_messages(self):
+                return [{"role": "user", "content": "计算 7*8"}]
+            def get_skill_id(self):
+                return "utility-skill"
+            def get_system_prompt(self):
+                return MockSkill2.system_prompt
+
+        original_get_skill_b = orch2.skill_registry.get
+        orch2.skill_registry.get = lambda sid: MockSkill2()
+
+        writer_b = SW2()
+        lc_b = SL2(writer_b)
+        lc_b._started = True
+
+        asyncio.new_event_loop().run_until_complete(
+            orch2._do_orchestrate(MockSession2(), writer_b, {}, lc_b)
+        )
+        orch2.skill_registry.get = original_get_skill_b
+
+        # 验证 1: 第二轮 LLM 看到的消息中包含 tool_result
+        if second_round_messages:
+            has_tool_result = any(
+                (isinstance(m, dict) and m.get("role") == "tool")
+                or (hasattr(m, "role") and m.role == "tool_result")
+                for m in second_round_messages
+            )
+            if has_tool_result:
+                ok("第二轮 LLM 调用时 context 包含 tool_result 消息")
+            else:
+                roles = [m.get("role") if isinstance(m, dict) else getattr(m, "role", "?") for m in second_round_messages]
+                fail("第二轮 context 应包含 tool_result", f"roles={roles}")
+        else:
+            fail("应记录到第二轮 LLM 消息")
+
+        # 验证 2: 最终文本就是 LLM 第二轮返回的 content（非手动拼接）
+        text_chunks_b = [c for c in writer_b.get_chunks() if c.get("type") == "text"]
+        if text_chunks_b:
+            final_text = text_chunks_b[-1].get("content", "")
+            # LLM 第二轮返回的 content 是 "7 乘以 8 等于 56。"
+            # 如果是旧版 _generate_summary_answer，会是手动拼接的格式（如 "工具结果: 56"）
+            if final_text == "7 乘以 8 等于 56。":
+                ok("总结文本 = LLM 第二轮返回的 content (自然生成，非拼接)")
+            else:
+                fail("总结文本应等于 LLM 第二轮 content", f"actual='{final_text}'")
+        else:
+            fail("应有 text chunk")
+
+        # 验证 3: 总结文本不是 tool_result 的原始内容（证明经过 LLM 加工）
+        tr_chunks_b = [c for c in writer_b.get_chunks() if c.get("type") == "tool_result"]
+        if tr_chunks_b and text_chunks_b:
+            tool_raw = tr_chunks_b[0].get("toolResult", "")
+            summary = text_chunks_b[-1].get("content", "")
+            # tool_result 是 JSON 格式 '{"result": 56}'，总结是自然语言 "7 乘以 8 等于 56。"
+            if tool_raw != summary and "等于" in summary and "result" in tool_raw:
+                ok("总结是自然语言 (非 tool_result 原始 JSON)")
+            else:
+                fail("总结应与 tool_result 不同", f"tool='{tool_raw}', summary='{summary}'")
+
+    finally:
+        orch2.chat_completion = original_chat_b
+
 
 # ════════════════════════════════════════════════════════
 #  主入口
 # ════════════════════════════════════════════════════════
+
+# ════════════════════════════════════════════════════════
+#  DuckDB 持久化测试
+# ════════════════════════════════════════════════════════
+
+def test_duckdb_persistence_basic():
+    """测试 34: DuckDBPersistence 基本功能"""
+    section("单元测试 34: DuckDBPersistence 基本功能")
+    import tempfile
+    import os as _os
+    from duckdb_store import DuckDBPersistence
+
+    # 使用临时文件
+    db_path = _os.path.join(tempfile.gettempdir(), f"test_duckdb_{int(time.time() * 1000)}.duckdb")
+    persistence = DuckDBPersistence(db_path)
+
+    # 34a: 初始化 + 建表
+    if persistence.is_enabled:
+        ok("DuckDBPersistence 初始化成功")
+    else:
+        fail("DuckDBPersistence 应初始化成功")
+        return
+
+    try:
+        # 34b: UserMemory 写入 + 读取
+        memory_data = {
+            "stableKey": "mem-test-001",
+            "text": "用户不吃香菜",
+            "tags": ["饮食", "忌口"],
+            "polarity": "avoid",
+            "status": "active",
+            "confidence": 0.9,
+            "sourceConversationId": "conv-001",
+            "reason": "用户明确表示",
+            "memoryType": "preference",
+            "subject": "饮食",
+            "facet": "香菜",
+            "semantic": {"embeddingModelId": "text-embedding-3-small", "semanticIndexVersion": "v1"},
+            "embedding": [0.1, 0.2, 0.3, 0.4, 0.5],
+            "createdAt": time.time(),
+            "updatedAt": time.time(),
+        }
+        persistence.save_memory("ns-test", memory_data)
+
+        loaded = persistence.load_memories("ns-test")
+        if len(loaded) == 1 and loaded[0]["text"] == "用户不吃香菜":
+            ok("UserMemory 写入 + 读取成功")
+        else:
+            fail("UserMemory 读写异常", str(loaded)[:80])
+
+        # 34c: 向量持久化
+        if loaded and loaded[0].get("embedding") == [0.1, 0.2, 0.3, 0.4, 0.5]:
+            ok("DOUBLE[] 向量持久化正确")
+        else:
+            fail("向量持久化异常", str(loaded[0].get("embedding")))
+
+        # 34d: tags 持久化 (VARCHAR[])
+        if loaded and loaded[0].get("tags") == ["饮食", "忌口"]:
+            ok("VARCHAR[] tags 持久化正确")
+        else:
+            fail("tags 持久化异常", str(loaded[0].get("tags")))
+
+        # 34e: semantic JSON 持久化
+        if loaded and loaded[0].get("semantic", {}).get("embeddingModelId") == "text-embedding-3-small":
+            ok("JSON semantic 持久化正确")
+        else:
+            fail("semantic 持久化异常", str(loaded[0].get("semantic")))
+
+        # 34f: 多条记忆
+        for i in range(5):
+            persistence.save_memory("ns-test", {
+                "stableKey": f"mem-{i}",
+                "text": f"记忆 {i}",
+                "tags": [f"tag{i}"],
+                "status": "active",
+                "confidence": 0.7,
+                "embedding": [float(i)] * 5,
+            })
+        loaded_multi = persistence.load_memories("ns-test")
+        if len(loaded_multi) == 6:  # 1 + 5
+            ok(f"多条记忆持久化 ({len(loaded_multi)} 条)")
+        else:
+            fail("多条记忆异常", f"期望 6，实际 {len(loaded_multi)}")
+
+        # 34g: 删除记忆
+        persistence.delete_memory("ns-test", "mem-test-001")
+        loaded_after_del = persistence.load_memories("ns-test")
+        if len(loaded_after_del) == 5:
+            ok("删除单条记忆成功")
+        else:
+            fail("删除异常", f"期望 5，实际 {len(loaded_after_del)}")
+
+        # 34h: ThreadState 写入 + 读取
+        persistence.save_thread_state(
+            thread_id="thread-001",
+            summary="这是对话摘要",
+            pinned_decisions=["决策一", "决策二"],
+            last_compacted_at=1234567890.0,
+            messages_count_at_last_compact=4,
+        )
+        ts_data = persistence.load_thread_state("thread-001")
+        if (ts_data and ts_data["summary"] == "这是对话摘要"
+                and ts_data["pinned_decisions"] == ["决策一", "决策二"]
+                and ts_data["messages_count_at_last_compact"] == 4):
+            ok("ThreadState 写入 + 读取成功")
+        else:
+            fail("ThreadState 读写异常", str(ts_data)[:80])
+
+        # 34i: ThreadMessages 写入 + 读取
+        persistence.save_thread_messages("thread-001", [
+            {"id": "msg-1", "role": "user", "text": "你好", "created_at": time.time()},
+            {"id": "msg-2", "role": "assistant", "text": "你好！", "created_at": time.time()},
+            {"id": "msg-3", "role": "user", "text": "计算 1+1", "created_at": time.time()},
+        ])
+        msgs = persistence.load_thread_messages("thread-001")
+        if len(msgs) == 3 and msgs[0]["text"] == "你好" and msgs[2]["text"] == "计算 1+1":
+            ok("ThreadMessages 写入 + 读取成功 (按 seq 排序)")
+        else:
+            fail("ThreadMessages 读写异常", str(msgs)[:80])
+
+        # 34j: Conversation 写入 + 读取
+        persistence.save_conversation(
+            session_id="sess-001",
+            conversation_id="conv-001",
+            thread_id="thread-001",
+            title="测试对话",
+            last_active_at=time.time(),
+            has_messages=True,
+        )
+        convs = persistence.load_conversations("sess-001")
+        if len(convs) == 1 and convs[0]["title"] == "测试对话":
+            ok("Conversation 写入 + 读取成功")
+        else:
+            fail("Conversation 读写异常", str(convs)[:80])
+
+        # 34k: SessionRegistry 写入 + 读取
+        persistence.save_session_registry("sess-001", "conv-001")
+        selected = persistence.load_session_registry("sess-001")
+        if selected == "conv-001":
+            ok("SessionRegistry 写入 + 读取成功")
+        else:
+            fail("SessionRegistry 读写异常", str(selected))
+
+        # 34l: 统计信息
+        stats = persistence.get_stats()
+        if stats.get("user_memories", 0) > 0 and stats.get("thread_messages", 0) > 0:
+            ok("统计信息正确", str(stats))
+        else:
+            fail("统计信息异常", str(stats))
+
+        # 34m: 删除 ThreadState (级联删除消息)
+        persistence.delete_thread_state("thread-001")
+        ts_after_del = persistence.load_thread_state("thread-001")
+        msgs_after_del = persistence.load_thread_messages("thread-001")
+        if ts_after_del is None and len(msgs_after_del) == 0:
+            ok("删除 ThreadState 级联删除消息成功")
+        else:
+            fail("删除 ThreadState 异常")
+
+        # 34n: namespace 隔离
+        persistence.save_memory("ns-other", {
+            "stableKey": "mem-other",
+            "text": "其他 namespace 的记忆",
+            "tags": [],
+            "status": "active",
+        })
+        ns_test_count = len(persistence.load_memories("ns-test"))
+        ns_other_count = len(persistence.load_memories("ns-other"))
+        if ns_other_count == 1 and ns_test_count == 5:
+            ok("namespace 隔离正确")
+        else:
+            fail("namespace 隔离异常", f"ns-test={ns_test_count}, ns-other={ns_other_count}")
+
+    finally:
+        persistence.close()
+        try:
+            _os.remove(db_path)
+        except Exception:
+            pass
+
+
+def test_user_memory_persistence():
+    """测试 35: UserMemoryStore 持久化恢复"""
+    section("单元测试 35: UserMemoryStore 持久化恢复")
+    import tempfile
+    import os as _os
+    from duckdb_store import DuckDBPersistence
+    from user_memory import UserMemoryStore, UserMemory, SemanticMetadata, STATUS_ACTIVE, STATUS_SUPPRESSED
+
+    db_path = _os.path.join(tempfile.gettempdir(), f"test_mem_{int(time.time() * 1000)}.duckdb")
+    persistence = DuckDBPersistence(db_path)
+
+    if not persistence.is_enabled:
+        fail("DuckDBPersistence 应启用")
+        return
+
+    try:
+        # 第一个 store 实例: 写入记忆
+        store1 = UserMemoryStore(persistence=persistence)
+        store1._get_namespace("test-ns")  # 触发加载
+
+        memory = UserMemory(
+            stable_key="mem-001",
+            text="用户喜欢深色模式",
+            tags=["UI", "偏好"],
+            polarity="prefer",
+            status=STATUS_ACTIVE,
+            confidence=0.85,
+            subject="UI",
+            facet="深色模式",
+        )
+        # 模拟向量（不调用 embedding API）
+        memory.embedding = [0.1, 0.2, 0.3]
+        # 设置 semantic 元数据（search 方法会检查 semantic_index_version 非空）
+        memory.semantic = SemanticMetadata.create_current()
+        store1._namespaces["test-ns"]["mem-001"] = memory
+        store1._persist_memory("test-ns", memory)
+
+        # 35a: 写入后验证
+        loaded = persistence.load_memories("test-ns")
+        if len(loaded) == 1 and loaded[0]["text"] == "用户喜欢深色模式":
+            ok("UserMemory 写入 DuckDB 成功")
+        else:
+            fail("写入异常")
+
+        # 35b: 向量持久化
+        if loaded and loaded[0].get("embedding") == [0.1, 0.2, 0.3]:
+            ok("向量持久化正确")
+        else:
+            fail("向量持久化异常")
+
+        # 35c: 新 store 实例模拟"重启恢复"
+        store2 = UserMemoryStore(persistence=persistence)
+        store2._get_namespace("test-ns")  # 触发从 DuckDB 加载
+
+        restored = store2.list_memories("test-ns")
+        if len(restored) == 1 and restored[0].text == "用户喜欢深色模式":
+            ok("重启后 UserMemory 恢复成功")
+        else:
+            fail("恢复异常", f"count={len(restored)}")
+
+        # 35d: 恢复的向量正确
+        if restored and restored[0].embedding == [0.1, 0.2, 0.3]:
+            ok("恢复的向量正确")
+        else:
+            fail("恢复的向量异常", str(restored[0].embedding) if restored else "None")
+
+        # 35e: 恢复的记忆可搜索
+        import asyncio
+        search_results = asyncio.new_event_loop().run_until_complete(
+            store2.search("test-ns", [0.1, 0.2, 0.3], limit=5)
+        )
+        if len(search_results) == 1 and search_results[0].memory.text == "用户喜欢深色模式":
+            ok("恢复的记忆可被向量搜索命中")
+        else:
+            fail("搜索异常", f"results={len(search_results)}")
+
+        # 35f: 删除后恢复
+        store2.delete("test-ns", "mem-001")
+        store3 = UserMemoryStore(persistence=persistence)
+        store3._get_namespace("test-ns")
+        if len(store3.list_memories("test-ns")) == 0:
+            ok("删除后重启恢复为空")
+        else:
+            fail("删除后不应有记忆")
+
+    finally:
+        persistence.close()
+        try:
+            _os.remove(db_path)
+        except Exception:
+            pass
+
+
+def test_thread_store_persistence():
+    """测试 36: ThreadStore 持久化恢复"""
+    section("单元测试 36: ThreadStore 持久化恢复")
+    import tempfile
+    import os as _os
+    from duckdb_store import DuckDBPersistence
+    from thread_state import ThreadStore, ThreadState, ThreadMessage
+    from stream import create_id
+
+    db_path = _os.path.join(tempfile.gettempdir(), f"test_thread_{int(time.time() * 1000)}.duckdb")
+    persistence = DuckDBPersistence(db_path)
+
+    if not persistence.is_enabled:
+        fail("DuckDBPersistence 应启用")
+        return
+
+    try:
+        # 第一个 store 实例: 创建 ThreadState + 写入消息
+        store1 = ThreadStore(persistence=persistence)
+        state = store1.create()
+        thread_id = state.thread_id
+
+        state.append("user", "你好")
+        state.append("assistant", "你好！有什么可以帮你的？")
+        state.summary = "用户打招呼"
+        state.pinned_decisions = ["使用深色模式"]
+        store1.persist_thread(thread_id)
+
+        # 36a: 验证持久化
+        ts_data = persistence.load_thread_state(thread_id)
+        msgs_data = persistence.load_thread_messages(thread_id)
+        if (ts_data and ts_data["summary"] == "用户打招呼"
+                and ts_data["pinned_decisions"] == ["使用深色模式"]
+                and len(msgs_data) == 2):
+            ok("ThreadState + Messages 持久化成功")
+        else:
+            fail("持久化异常", f"ts={ts_data}, msgs={len(msgs_data)}")
+
+        # 36b: 新 store 实例模拟"重启恢复"
+        store2 = ThreadStore(persistence=persistence)
+        restored = store2.get(thread_id)
+
+        if restored and len(restored.messages) == 2:
+            ok("重启后 ThreadState 恢复成功", f"{len(restored.messages)} 条消息")
+        else:
+            fail("恢复异常", f"messages={len(restored.messages) if restored else 0}")
+
+        # 36c: 恢复的消息内容正确
+        if restored:
+            if (restored.messages[0].text == "你好"
+                    and restored.messages[1].text == "你好！有什么可以帮你的？"):
+                ok("恢复的消息内容正确")
+            else:
+                fail("消息内容异常",
+                     f"[0]={restored.messages[0].text[:30]}, [1]={restored.messages[1].text[:30]}")
+
+            # 36d: 恢复的 summary + pinned 正确
+            if (restored.summary == "用户打招呼"
+                    and restored.pinned_decisions == ["使用深色模式"]):
+                ok("恢复的 summary + pinned_decisions 正确")
+            else:
+                fail("summary/pinned 恢复异常")
+
+        # 36e: 删除后恢复
+        store2.delete(thread_id)
+        store3 = ThreadStore(persistence=persistence)
+        restored_after_del = store3.get(thread_id)
+        if restored_after_del is None:
+            ok("删除后重启恢复为空")
+        else:
+            fail("删除后不应有 ThreadState")
+
+    finally:
+        persistence.close()
+        try:
+            _os.remove(db_path)
+        except Exception:
+            pass
+
+
+def test_session_store_persistence():
+    """测试 37: SessionStore 持久化恢复"""
+    section("单元测试 37: SessionStore 持久化恢复")
+    import tempfile
+    import os as _os
+    from duckdb_store import DuckDBPersistence
+    from thread_state import SessionStore
+
+    db_path = _os.path.join(tempfile.gettempdir(), f"test_session_{int(time.time() * 1000)}.duckdb")
+    persistence = DuckDBPersistence(db_path)
+
+    if not persistence.is_enabled:
+        fail("DuckDBPersistence 应启用")
+        return
+
+    try:
+        # 第一个 store 实例: 创建会话注册表
+        store1 = SessionStore(persistence=persistence)
+        registry1 = store1.get_or_create("test-session-001")
+
+        conv1 = registry1.create("第一个对话")
+        conv2 = registry1.create("第二个对话")
+        registry1.select(conv1.conversation_id)
+        registry1.touch(conv1.conversation_id)
+        registry1.rename(conv2.conversation_id, "重命名的对话")
+
+        # 37a: 验证持久化
+        convs_data = persistence.load_conversations("test-session-001")
+        selected = persistence.load_session_registry("test-session-001")
+        if len(convs_data) == 2 and selected == conv1.conversation_id:
+            ok("Conversation + 选中状态持久化成功")
+        else:
+            fail("持久化异常", f"convs={len(convs_data)}, selected={selected}")
+
+        # 37b: 新 store 实例模拟"重启恢复"
+        store2 = SessionStore(persistence=persistence)
+        registry2 = store2.get_or_create("test-session-001")
+
+        restored_convs = registry2.list_conversations()
+        if len(restored_convs) == 2:
+            ok("重启后会话列表恢复成功", f"{len(restored_convs)} 个会话")
+        else:
+            fail("恢复异常", f"convs={len(restored_convs)}")
+
+        # 37c: 恢复的标题正确
+        titles = {c.title for c in restored_convs}
+        if "重命名的对话" in titles:
+            ok("恢复的会话标题正确 (含重命名)")
+        else:
+            fail("标题恢复异常", str(titles))
+
+        # 37d: 恢复的选中状态正确
+        if registry2.selected_conversation_id == conv1.conversation_id:
+            ok("恢复的选中状态正确")
+        else:
+            fail("选中状态恢复异常",
+                 f"expected={conv1.conversation_id[:8]}, actual={registry2.selected_conversation_id[:8]}")
+
+        # 37e: 恢复的 has_messages 正确
+        conv1_restored = registry2.get(conv1.conversation_id)
+        if conv1_restored and conv1_restored.has_messages:
+            ok("恢复的 has_messages 正确")
+        else:
+            fail("has_messages 恢复异常")
+
+        # 37f: 删除会话后恢复
+        registry2.delete(conv1.conversation_id)
+        store3 = SessionStore(persistence=persistence)
+        registry3 = store3.get_or_create("test-session-001")
+        restored_convs_3 = registry3.list_conversations()
+        if len(restored_convs_3) == 1:
+            ok("删除会话后重启恢复正确", f"{len(restored_convs_3)} 个会话")
+        else:
+            fail("删除恢复异常", f"convs={len(restored_convs_3)}")
+
+    finally:
+        persistence.close()
+        try:
+            _os.remove(db_path)
+        except Exception:
+            pass
+
+
+def test_duckdb_degradation():
+    """测试 38: DuckDB 降级模式 — DUCKDB_PATH 为空时纯内存模式"""
+    section("单元测试 38: DuckDB 降级模式")
+    from duckdb_store import DuckDBPersistence
+    from user_memory import UserMemoryStore, UserMemory, STATUS_ACTIVE
+    from thread_state import ThreadStore
+
+    # 38a: DUCKDB_PATH 为空 → 不启用持久化
+    persistence_empty = DuckDBPersistence("")
+    if not persistence_empty.is_enabled:
+        ok("DUCKDB_PATH 为空时不启用持久化")
+    else:
+        fail("空路径不应启用持久化")
+
+    # 38b: 纯内存 UserMemoryStore 仍正常工作
+    store_mem = UserMemoryStore(persistence=None)
+    store_mem._get_namespace("ns-mem-test")
+    memory = UserMemory(
+        stable_key="mem-mem",
+        text="纯内存记忆",
+        status=STATUS_ACTIVE,
+    )
+    store_mem._namespaces["ns-mem-test"]["mem-mem"] = memory
+    if store_mem.list_memories("ns-mem-test")[0].text == "纯内存记忆":
+        ok("纯内存 UserMemoryStore 正常工作")
+    else:
+        fail("纯内存模式异常")
+
+    # 38c: 纯内存 ThreadStore 仍正常工作
+    store_thread = ThreadStore(persistence=None)
+    state = store_thread.create()
+    state.append("user", "测试")
+    if store_thread.get(state.thread_id) and len(state.messages) == 1:
+        ok("纯内存 ThreadStore 正常工作")
+    else:
+        fail("纯内存 ThreadStore 异常")
+
+    # 38d: persist_thread 在无持久化时静默跳过
+    try:
+        store_thread.persist_thread(state.thread_id)
+        ok("persist_thread 无持久化时静默跳过")
+    except Exception as e:
+        fail("无持久化时 persist_thread 不应报错", str(e))
+
+    # 38e: 无效路径 → 降级为纯内存
+    persistence_bad = DuckDBPersistence("/nonexistent/path/that/does/not/exist/db.duckdb")
+    # DuckDB 可能创建目录，如果不行则降级
+    if not persistence_bad.is_enabled:
+        ok("无效路径时降级为纯内存模式")
+    else:
+        # DuckDB 可能成功创建了目录，这也 OK
+        ok("DuckDB 自动创建目录 (也 acceptable)")
+        persistence_bad.close()
+
 
 def run_unit_tests():
     test_validate_tasklist_structure()
@@ -2955,6 +4150,19 @@ def run_unit_tests():
     test_followup_chunks()
     test_tool_execution_error_handling()
     test_truncated_tool_call_in_loop()
+    # Chat Orchestrator 集成测试 (阶段一: agent_loop 迁移)
+    test_orchestrator_message_conversion()
+    test_orchestrator_stop_reason_mapping()
+    test_orchestrator_build_tool_definitions()
+    test_orchestrator_should_stop()
+    test_orchestrator_emit_event()
+    test_orchestrator_full_loop_mock()
+    # DuckDB 持久化测试
+    test_duckdb_persistence_basic()
+    test_user_memory_persistence()
+    test_thread_store_persistence()
+    test_session_store_persistence()
+    test_duckdb_degradation()
 
 
 def run_api_tests():

@@ -168,6 +168,9 @@ class ChatService:
                 if write_thread_state.should_compact():
                     await compact_thread(write_thread_state)
 
+                # 持久化 ThreadState (append + compact 后统一写入 DuckDB)
+                thread_store.persist_thread(write_thread_state.thread_id)
+
                 if write_conversation_id and write_session_id:
                     reg = session_store.get(write_session_id)
                     if reg:

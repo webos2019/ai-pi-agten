@@ -12,6 +12,11 @@ UserMemory — 长期用户记忆数据模型 + 内存向量存储
 三层记忆 vs 长期记忆:
 - ThreadState (短期): 会话内 recent + summary + pinned，每轮都拼进上下文
 - UserMemory (长期): 跨会话的用户偏好，按语义相关度召回，最多注入 3 条
+
+持久化:
+- DuckDB Write-Through: 内存缓存优先读，写入时同步落盘
+- 服务重启后自动从 DuckDB 恢复（含向量）
+- DuckDB 不可用时降级为纯内存模式
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ from embedding import (
     get_embedding_provider_kind,
     is_embedding_configured,
 )
+from duckdb_store import DuckDBPersistence
 
 
 # ─── 常量 ──────────────────────────────────────────────
@@ -202,22 +208,62 @@ class MemorySearchResult:
 
 class UserMemoryStore:
     """
-    长期用户记忆内存存储 — 服务端单例。
+    长期用户记忆存储 — 服务端单例。
 
     - 按 namespace（session_id）隔离
     - active 记忆自动向量化，suppressed/inactive 不建索引
     - 向量搜索：遍历计算 cosine 相似度，返回 top-K
-    - 内存存储，服务重启清除（与 ThreadStore 一致）
+    - DuckDB Write-Through: 内存缓存 + 持久化双层
+    - 服务重启后自动从 DuckDB 恢复（含向量）
+    - DuckDB 不可用时降级为纯内存模式
     """
 
-    def __init__(self):
+    def __init__(self, persistence: DuckDBPersistence | None = None):
         # namespace -> { stable_key -> UserMemory }
         self._namespaces: dict[str, dict[str, UserMemory]] = {}
+        self._persistence = persistence
+        self._loaded_namespaces: set[str] = set()
 
     def _get_namespace(self, namespace: str) -> dict[str, UserMemory]:
         if namespace not in self._namespaces:
             self._namespaces[namespace] = {}
+            # 延迟加载: 首次访问 namespace 时从 DuckDB 恢复
+            self._load_namespace_from_db(namespace)
         return self._namespaces[namespace]
+
+    def _load_namespace_from_db(self, namespace: str) -> None:
+        """从 DuckDB 加载 namespace 下的所有记忆到内存缓存"""
+        if namespace in self._loaded_namespaces:
+            return
+        self._loaded_namespaces.add(namespace)
+
+        if not self._persistence or not self._persistence.is_enabled:
+            return
+
+        try:
+            stored_list = self._persistence.load_memories(namespace)
+            ns = self._namespaces.setdefault(namespace, {})
+            for stored in stored_list:
+                memory = UserMemory.from_dict(stored)
+                # 恢复向量
+                emb = stored.get("embedding")
+                if emb:
+                    memory.embedding = list(emb)
+                ns[memory.stable_key] = memory
+            if stored_list:
+                print(f"[user-memory] 从 DuckDB 恢复 {len(stored_list)} 条记忆 (namespace={namespace})")
+        except Exception as e:
+            print(f"[user-memory] 从 DuckDB 恢复失败: {e}")
+
+    def _persist_memory(self, namespace: str, memory: UserMemory) -> None:
+        """Write-Through: 将内存中的记忆同步写入 DuckDB"""
+        if not self._persistence or not self._persistence.is_enabled:
+            return
+
+        stored = memory.to_stored_dict()
+        # embedding 单独传递（to_stored_dict 不含 embedding）
+        stored["embedding"] = memory.embedding
+        self._persistence.save_memory(namespace, stored)
 
     async def put(
         self,
@@ -262,6 +308,7 @@ class UserMemoryStore:
             memory.semantic = SemanticMetadata()
 
         ns[key] = memory
+        self._persist_memory(namespace, memory)
         return memory
 
     async def search(
@@ -308,6 +355,8 @@ class UserMemoryStore:
         ns = self._get_namespace(namespace)
         if key in ns:
             del ns[key]
+            if self._persistence and self._persistence.is_enabled:
+                self._persistence.delete_memory(namespace, key)
             return True
         return False
 
@@ -331,6 +380,7 @@ class UserMemoryStore:
             memory.embedding = None
             memory.semantic = SemanticMetadata()
 
+        self._persist_memory(namespace, memory)
         return memory
 
     def find_by_text(
@@ -361,7 +411,9 @@ class UserMemoryStore:
 
 # ─── 全局单例 ──────────────────────────────────────────
 
-user_memory_store = UserMemoryStore()
+from duckdb_store import get_persistence
+
+user_memory_store = UserMemoryStore(persistence=get_persistence())
 
 
 # ─── Namespace 工具 ────────────────────────────────────

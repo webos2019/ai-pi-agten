@@ -28,6 +28,11 @@ build/
 .DS_Store
 Thumbs.db
 
+# ===== DuckDB 持久化数据 =====
+*.duckdb
+*.duckdb.wal
+data/
+
 # ===== IDE / 编辑器 =====
 .idea/
 .vscode/

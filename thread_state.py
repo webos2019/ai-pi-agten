@@ -32,6 +32,7 @@ from typing import Any
 
 from stream import create_id, StreamWriter
 from deepseek import chat_completion
+from duckdb_store import DuckDBPersistence
 
 
 # ─── 常量 ──────────────────────────────────────────────
@@ -158,36 +159,127 @@ class ThreadState:
         }
 
 
-# ─── ThreadStore — 内存存储 ────────────────────────────
+# ─── ThreadStore — DuckDB 持久化存储 ──────────────────────
 
 class ThreadStore:
-    """线程内存存储 — 服务端单例，不持久化"""
+    """
+    会话状态存储 — 服务端单例。
 
-    def __init__(self):
+    - DuckDB Write-Through: 内存缓存 + 持久化双层
+    - 服务重启后自动从 DuckDB 恢复（summary + pinned + messages）
+    - DuckDB 不可用时降级为纯内存模式
+    """
+
+    def __init__(self, persistence: DuckDBPersistence | None = None):
         self._threads: dict[str, ThreadState] = {}
+        self._persistence = persistence
 
     def create(self) -> ThreadState:
         thread_id = create_id()
         state = ThreadState(thread_id=thread_id)
         self._threads[thread_id] = state
+        self.persist_thread(thread_id)
         return state
 
     def get(self, thread_id: str) -> ThreadState | None:
+        # 延迟加载: 如果内存没有，尝试从 DuckDB 恢复
+        if thread_id not in self._threads:
+            self._load_thread_from_db(thread_id)
         return self._threads.get(thread_id)
 
     def get_or_create(self, thread_id: str) -> ThreadState:
+        if thread_id not in self._threads:
+            self._load_thread_from_db(thread_id)
         if thread_id in self._threads:
             return self._threads[thread_id]
         state = ThreadState(thread_id=thread_id)
         self._threads[thread_id] = state
+        self.persist_thread(thread_id)
         return state
 
     def delete(self, thread_id: str) -> None:
         self._threads.pop(thread_id, None)
+        if self._persistence and self._persistence.is_enabled:
+            self._persistence.delete_thread_state(thread_id)
+
+    def _load_thread_from_db(self, thread_id: str) -> None:
+        """从 DuckDB 加载 ThreadState 到内存缓存"""
+        if not self._persistence or not self._persistence.is_enabled:
+            return
+
+        try:
+            state_data = self._persistence.load_thread_state(thread_id)
+            messages_data = self._persistence.load_thread_messages(thread_id)
+
+            if not state_data and not messages_data:
+                return
+
+            state = ThreadState(thread_id=thread_id)
+            if state_data:
+                state.summary = state_data.get("summary", "")
+                state.pinned_decisions = state_data.get("pinned_decisions", [])
+                state.last_compacted_at = state_data.get("last_compacted_at", 0.0)
+                state.messages_count_at_last_compact = state_data.get(
+                    "messages_count_at_last_compact", 0
+                )
+
+            for msg_data in messages_data:
+                state.messages.append(ThreadMessage(
+                    id=msg_data.get("id", ""),
+                    role=msg_data.get("role", "user"),
+                    text=msg_data.get("text", ""),
+                    created_at=msg_data.get("created_at", time.time()),
+                ))
+
+            self._threads[thread_id] = state
+            if state.messages or state.summary:
+                print(f"[thread-state] 从 DuckDB 恢复会话 {thread_id[:8]}... "
+                      f"({len(state.messages)} 条消息)")
+        except Exception as e:
+            print(f"[thread-state] 从 DuckDB 恢复失败: {e}")
+
+    def persist_thread(self, thread_id: str) -> None:
+        """
+        Write-Through: 将 ThreadState 同步写入 DuckDB。
+
+        保存内容: summary + pinned_decisions + 全量消息。
+        调用时机: append 后 / compact 后 / create 后。
+        """
+        if not self._persistence or not self._persistence.is_enabled:
+            return
+
+        state = self._threads.get(thread_id)
+        if not state:
+            return
+
+        try:
+            self._persistence.save_thread_state(
+                thread_id=thread_id,
+                summary=state.summary,
+                pinned_decisions=state.pinned_decisions,
+                last_compacted_at=state.last_compacted_at,
+                messages_count_at_last_compact=state.messages_count_at_last_compact,
+            )
+            self._persistence.save_thread_messages(
+                thread_id=thread_id,
+                messages=[
+                    {
+                        "id": m.id,
+                        "role": m.role,
+                        "text": m.text,
+                        "created_at": m.created_at,
+                    }
+                    for m in state.messages
+                ],
+            )
+        except Exception as e:
+            print(f"[thread-state] 持久化失败: {e}")
 
 
 # 全局单例
-thread_store = ThreadStore()
+from duckdb_store import get_persistence
+
+thread_store = ThreadStore(persistence=get_persistence())
 
 
 # ─── 多会话容器: Conversation + ConversationRegistry ──
@@ -216,6 +308,7 @@ class ConversationRegistry:
     session_id: str
     conversations: list[Conversation] = field(default_factory=list)
     selected_conversation_id: str = ""
+    _persistence: DuckDBPersistence | None = field(default=None, repr=False)
 
     def list_conversations(self) -> list[Conversation]:
         """按 last_active_at 倒序返回"""
@@ -236,6 +329,7 @@ class ConversationRegistry:
         )
         self.conversations.append(conv)
         self._trim()
+        self._persist_conversation(conv)
         return conv
 
     def touch(self, conversation_id: str) -> None:
@@ -244,12 +338,14 @@ class ConversationRegistry:
         if conv:
             conv.last_active_at = time.time()
             conv.has_messages = True
+            self._persist_conversation(conv)
 
     def select(self, conversation_id: str) -> bool:
         """切换选中会话 (服务端校验)"""
         if not self.get(conversation_id):
             return False
         self.selected_conversation_id = conversation_id
+        self._persist_session_registry()
         return True
 
     def rename(self, conversation_id: str, title: str) -> bool:
@@ -257,6 +353,7 @@ class ConversationRegistry:
         if not conv:
             return False
         conv.title = title[:TITLE_MAX_CHARS] or "未命名对话"
+        self._persist_conversation(conv)
         return True
 
     def delete(self, conversation_id: str) -> str | None:
@@ -269,6 +366,10 @@ class ConversationRegistry:
             self.selected_conversation_id = (
                 self.conversations[0].conversation_id if self.conversations else ""
             )
+            self._persist_session_registry()
+        # 持久化删除
+        if self._persistence and self._persistence.is_enabled:
+            self._persistence.delete_conversation(self.session_id, conversation_id)
         return conv.thread_id
 
     def _trim(self) -> None:
@@ -280,6 +381,30 @@ class ConversationRegistry:
         for c in to_remove:
             self.conversations.remove(c)
             thread_store.delete(c.thread_id)
+            if self._persistence and self._persistence.is_enabled:
+                self._persistence.delete_conversation(self.session_id, c.conversation_id)
+
+    def _persist_conversation(self, conv: Conversation) -> None:
+        """Write-Through: 持久化单条 Conversation"""
+        if not self._persistence or not self._persistence.is_enabled:
+            return
+        self._persistence.save_conversation(
+            session_id=self.session_id,
+            conversation_id=conv.conversation_id,
+            thread_id=conv.thread_id,
+            title=conv.title,
+            last_active_at=conv.last_active_at,
+            has_messages=conv.has_messages,
+        )
+
+    def _persist_session_registry(self) -> None:
+        """Write-Through: 持久化选中状态"""
+        if not self._persistence or not self._persistence.is_enabled:
+            return
+        self._persistence.save_session_registry(
+            session_id=self.session_id,
+            selected_conversation_id=self.selected_conversation_id,
+        )
 
     def to_dto(self) -> dict[str, Any]:
         return {
@@ -290,22 +415,63 @@ class ConversationRegistry:
 
 
 class SessionStore:
-    """浏览器会话存储 — 管理多个 ConversationRegistry"""
+    """
+    浏览器会话存储 — 管理多个 ConversationRegistry。
 
-    def __init__(self):
+    - DuckDB Write-Through: 内存缓存 + 持久化双层
+    - 服务重启后自动从 DuckDB 恢复
+    - DuckDB 不可用时降级为纯内存模式
+    """
+
+    def __init__(self, persistence: DuckDBPersistence | None = None):
         self._registries: dict[str, ConversationRegistry] = {}
+        self._persistence = persistence
 
     def get_or_create(self, session_id: str) -> ConversationRegistry:
         if session_id not in self._registries:
-            self._registries[session_id] = ConversationRegistry(session_id=session_id)
+            registry = ConversationRegistry(
+                session_id=session_id,
+                _persistence=self._persistence,
+            )
+            # 从 DuckDB 恢复
+            self._load_registry_from_db(registry)
+            self._registries[session_id] = registry
         return self._registries[session_id]
 
     def get(self, session_id: str) -> ConversationRegistry | None:
         return self._registries.get(session_id)
 
+    def _load_registry_from_db(self, registry: ConversationRegistry) -> None:
+        """从 DuckDB 加载会话注册表到内存缓存"""
+        if not self._persistence or not self._persistence.is_enabled:
+            return
+
+        try:
+            convs_data = self._persistence.load_conversations(registry.session_id)
+            selected_id = self._persistence.load_session_registry(registry.session_id)
+
+            for conv_data in convs_data:
+                conv = Conversation(
+                    conversation_id=conv_data["conversation_id"],
+                    thread_id=conv_data["thread_id"],
+                    title=conv_data.get("title", "新对话"),
+                    last_active_at=conv_data.get("last_active_at", time.time()),
+                    has_messages=conv_data.get("has_messages", False),
+                )
+                registry.conversations.append(conv)
+
+            if selected_id is not None:
+                registry.selected_conversation_id = selected_id
+
+            if convs_data:
+                print(f"[session-store] 从 DuckDB 恢复 {len(convs_data)} 个会话 "
+                      f"(session={registry.session_id[:8]}...)")
+        except Exception as e:
+            print(f"[session-store] 从 DuckDB 恢复失败: {e}")
+
 
 # 全局单例
-session_store = SessionStore()
+session_store = SessionStore(persistence=get_persistence())
 
 
 # ─── 压缩: compact_thread ──────────────────────────────
@@ -381,6 +547,12 @@ async def compact_thread(state: ThreadState) -> None:
         state.messages = state.messages[-MAX_RECENT_MESSAGES:]
         state.last_compacted_at = time.time()
         state.messages_count_at_last_compact = len(state.messages)  # 冷却期基准
+
+        # 持久化压缩后的 ThreadState
+        try:
+            thread_store.persist_thread(state.thread_id)
+        except Exception:
+            pass
 
     except Exception:
         # 压缩失败，不覆盖已有 ThreadState，不影响用户
