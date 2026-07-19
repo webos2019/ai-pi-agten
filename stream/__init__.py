@@ -19,6 +19,9 @@ from .protocol import (
     create_steer_queued_chunk,
     create_steer_applied_chunk,
     create_steer_rejected_chunk,
+    create_followup_queued_chunk,
+    create_followup_applied_chunk,
+    create_followup_rejected_chunk,
     AGENT_STEP_ACTIONS,
 )
 from .lifecycle import StreamLifecycle, StreamWriter, create_ndjson_stream
@@ -42,6 +45,9 @@ __all__ = [
     "create_steer_queued_chunk",
     "create_steer_applied_chunk",
     "create_steer_rejected_chunk",
+    "create_followup_queued_chunk",
+    "create_followup_applied_chunk",
+    "create_followup_rejected_chunk",
     "AGENT_STEP_ACTIONS",
     "StreamLifecycle",
     "StreamWriter",

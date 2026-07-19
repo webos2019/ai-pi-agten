@@ -220,6 +220,51 @@ def create_steer_rejected_chunk(
     }
 
 
+# ─── Follow-up Chunks (流后追加) ───────────────────────
+
+
+def create_followup_queued_chunk(
+    followup_id: str,
+    followup_text: str,
+    queue_size: int,
+) -> dict[str, Any]:
+    """follow-up 已入队 — 确认客户端的 follow-up 请求已接收"""
+    return {
+        "type": "followup_queued",
+        "followupId": followup_id,
+        "followupText": followup_text,
+        "queueSize": queue_size,
+    }
+
+
+def create_followup_applied_chunk(
+    followup_id: str,
+    followup_text: str,
+    turn_index: int,
+) -> dict[str, Any]:
+    """follow-up 已应用 — Agent 在外层循环消费了 follow-up 消息"""
+    return {
+        "type": "followup_applied",
+        "followupId": followup_id,
+        "followupText": followup_text,
+        "turnIndex": turn_index,
+    }
+
+
+def create_followup_rejected_chunk(
+    followup_id: str,
+    followup_text: str,
+    reason: str,
+) -> dict[str, Any]:
+    """follow-up 被拒绝 — 流已结束或 follow-up 无效"""
+    return {
+        "type": "followup_rejected",
+        "followupId": followup_id,
+        "followupText": followup_text,
+        "reason": reason,
+    }
+
+
 # ─── Agent Step Chunks ──────────────────────────────────
 
 # Agent 步骤动作类型

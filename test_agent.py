@@ -2058,6 +2058,872 @@ def test_no_tasklist_command():
 
 
 # ════════════════════════════════════════════════════════
+#  Agent Loop 单元测试 (pi.dev 风格钩子化循环)
+# ════════════════════════════════════════════════════════
+
+def test_agent_loop_basic():
+    """测试 15: agent_loop 基本循环 — 无工具的单轮对话"""
+    section("单元测试 15: agent_loop 基本循环 (无工具)")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig,
+        AgentEvent,
+    )
+
+    call_count = 0
+
+    async def mock_stream_fn(ctx, cfg):
+        nonlocal call_count
+        call_count += 1
+        return AgentMessage(
+            role="assistant",
+            content="你好，我是 Agent",
+            stop_reason="stop",
+        )
+
+    config = AgentLoopConfig(stream_fn=mock_stream_fn)
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[],
+    )
+    prompts = [AgentMessage(role="user", content="你好")]
+
+    events, messages = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    # 应该只调用 1 次 LLM（无工具调用，无 follow-up）
+    if call_count == 1:
+        ok("单轮对话 LLM 只调用 1 次")
+    else:
+        fail("单轮对话应只调用 1 次 LLM", f"实际 {call_count} 次")
+
+    # 应有 agent_start / message_start / message_end / turn_end / agent_end
+    event_types = [e.type for e in events]
+    if "agent_start" in event_types and "agent_end" in event_types:
+        ok("事件流包含 agent_start 和 agent_end")
+    else:
+        fail("事件流缺少必要事件", str(event_types))
+
+    # messages 应包含 user prompt + assistant 响应
+    if len(messages) == 2 and messages[1].content == "你好，我是 Agent":
+        ok("messages 包含 user prompt 和 assistant 响应")
+    else:
+        fail("messages 结构异常", f"len={len(messages)}")
+
+
+def test_agent_loop_tool_calls():
+    """测试 16: agent_loop 工具调用 — 内层循环（工具 → 二次响应）"""
+    section("单元测试 16: agent_loop 工具调用循环")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig, ToolDefinition,
+    )
+
+    call_count = 0
+
+    async def mock_stream_fn(ctx, cfg):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # 第一轮：请求工具调用
+            return AgentMessage(
+                role="assistant",
+                content="让我计算一下",
+                tool_calls=[{
+                    "id": "tc-001",
+                    "name": "calculator",
+                    "arguments": {"expression": "1+1"},
+                }],
+                stop_reason="tool_use",
+            )
+        else:
+            # 第二轮：工具返回后给出最终答案
+            return AgentMessage(
+                role="assistant",
+                content="1+1=2",
+                stop_reason="stop",
+            )
+
+    async def calc_handler(args):
+        expr = args.get("expression", "")
+        if expr == "1+1":
+            return "2"
+        return "unknown"
+
+    calc_tool = ToolDefinition(
+        name="calculator",
+        description="计算器",
+        parameters={"type": "object", "properties": {"expression": {"type": "string"}}},
+        handler=calc_handler,
+    )
+
+    config = AgentLoopConfig(stream_fn=mock_stream_fn)
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[calc_tool],
+    )
+    prompts = [AgentMessage(role="user", content="1+1=?")]
+
+    events, messages = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    # LLM 应被调用 2 次（工具调用 + 最终回答）
+    if call_count == 2:
+        ok("工具调用触发 2 次 LLM 调用")
+    else:
+        fail("应调用 2 次 LLM", f"实际 {call_count} 次")
+
+    # messages 应包含: user, assistant(tool_call), tool_result, assistant(final)
+    if len(messages) == 4:
+        ok("messages 包含 4 条消息 (user→assistant→tool_result→assistant)")
+    else:
+        fail("messages 结构异常", f"len={len(messages)}")
+
+    # tool_result 消息内容应为 "2"
+    tool_results = [m for m in messages if m.role == "tool_result"]
+    if tool_results and tool_results[0].content == "2":
+        ok("工具返回结果正确")
+    else:
+        fail("工具返回结果异常")
+
+
+def test_transform_context_hook():
+    """测试 17: transformContext 钩子 — 上下文转换（RAG 注入/过滤）"""
+    section("单元测试 17: transformContext 钩子")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig,
+    )
+
+    transformed_messages = None
+    original_count = 0
+
+    async def mock_stream_fn(ctx, cfg):
+        # 记录转换后的消息
+        nonlocal transformed_messages
+        transformed_messages = list(ctx.messages)
+        return AgentMessage(role="assistant", content="ok", stop_reason="stop")
+
+    async def transform_context(messages):
+        # 模拟 RAG 注入：在消息列表前加一条系统注入消息
+        nonlocal original_count
+        original_count = len(messages)
+        rag_msg = AgentMessage(role="user", content="[RAG] 相关文档: ...")
+        return [rag_msg] + messages
+
+    config = AgentLoopConfig(
+        stream_fn=mock_stream_fn,
+        transform_context=transform_context,
+    )
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[],
+    )
+    prompts = [AgentMessage(role="user", content="问题")]
+
+    asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    # transform_context 应被调用，LLM 看到的消息应比原始多 1 条
+    if transformed_messages and len(transformed_messages) == original_count + 1:
+        ok("transformContext 注入了 1 条 RAG 消息")
+    else:
+        fail("transformContext 未正确工作",
+             f"transformed={len(transformed_messages) if transformed_messages else 0}, original={original_count}")
+
+    # 第一条应是 RAG 注入消息
+    if transformed_messages and "[RAG]" in str(transformed_messages[0].content):
+        ok("RAG 注入消息在首位")
+    else:
+        fail("RAG 消息应在首位")
+
+
+def test_prepare_next_turn_hook():
+    """测试 18: prepareNextTurn 钩子 — 模型热切换"""
+    section("单元测试 18: prepareNextTurn 钩子 (模型热切换)")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig,
+        ToolDefinition, NextTurnSnapshot,
+    )
+
+    call_count = 0
+    models_seen = []
+
+    async def mock_stream_fn(ctx, cfg):
+        nonlocal call_count
+        call_count += 1
+        models_seen.append(ctx.model)
+        if call_count == 1:
+            return AgentMessage(
+                role="assistant",
+                content="调用工具",
+                tool_calls=[{"id": "tc-1", "name": "echo", "arguments": {"text": "hi"}}],
+                stop_reason="tool_use",
+            )
+        return AgentMessage(role="assistant", content="完成", stop_reason="stop")
+
+    async def echo_handler(args):
+        return args.get("text", "")
+
+    echo_tool = ToolDefinition(
+        name="echo",
+        description="回显",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=echo_handler,
+    )
+
+    async def prepare_next_turn(ctx, msg, tool_results):
+        # 第一轮后切换到更强模型
+        return NextTurnSnapshot(model="deepseek-reasoner", thinking_level="high")
+
+    config = AgentLoopConfig(
+        stream_fn=mock_stream_fn,
+        prepare_next_turn=prepare_next_turn,
+    )
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[echo_tool],
+        model="deepseek-chat",
+        thinking_level="medium",
+    )
+    prompts = [AgentMessage(role="user", content="测试")]
+
+    asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    # 第一次用 deepseek-chat，第二次应切换到 deepseek-reasoner
+    if len(models_seen) == 2 and models_seen[0] == "deepseek-chat" and models_seen[1] == "deepseek-reasoner":
+        ok("prepareNextTurn 正确切换模型", f"{models_seen[0]} → {models_seen[1]}")
+    else:
+        fail("模型切换异常", str(models_seen))
+
+
+def test_should_stop_after_turn_hook():
+    """测试 19: shouldStopAfterTurn 钩子 — 自定义停止策略"""
+    section("单元测试 19: shouldStopAfterTurn 钩子 (自定义停止)")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig, ToolDefinition,
+    )
+
+    call_count = 0
+
+    async def mock_stream_fn(ctx, cfg):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AgentMessage(
+                role="assistant",
+                content="调用工具",
+                tool_calls=[{"id": "tc-1", "name": "echo", "arguments": {"text": "hi"}}],
+                stop_reason="tool_use",
+            )
+        return AgentMessage(role="assistant", content="继续", stop_reason="tool_use",
+                            tool_calls=[{"id": "tc-2", "name": "echo", "arguments": {"text": "again"}}])
+
+    async def echo_handler(args):
+        return args.get("text", "")
+
+    echo_tool = ToolDefinition(
+        name="echo",
+        description="回显",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=echo_handler,
+    )
+
+    stop_called = False
+
+    async def should_stop(msg, tool_results, ctx):
+        nonlocal stop_called
+        stop_called = True
+        # 工具执行 1 次后就停止
+        return True
+
+    config = AgentLoopConfig(
+        stream_fn=mock_stream_fn,
+        should_stop_after_turn=should_stop,
+    )
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[echo_tool],
+    )
+    prompts = [AgentMessage(role="user", content="测试")]
+
+    events, messages = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    if stop_called:
+        ok("shouldStopAfterTurn 钩子被调用")
+    else:
+        fail("shouldStopAfterTurn 应被调用")
+
+    # LLM 只应被调用 1 次（工具执行后即停止）
+    if call_count == 1:
+        ok("shouldStopAfterTurn 正确停止循环 (仅 1 次 LLM 调用)")
+    else:
+        fail("应在 1 次后停止", f"实际调用 {call_count} 次")
+
+
+def test_fail_tool_calls_truncated():
+    """测试 20: failToolCallsFromTruncatedMessage — 截断容错"""
+    section("单元测试 20: failToolCallsFromTruncatedMessage (截断容错)")
+
+    from agent_loop import (
+        fail_tool_calls_from_truncated_message, AgentEvent,
+    )
+
+    async def noop_emit(event):
+        pass
+
+    # 20a: 完整的 tool_call arguments
+    complete_tc = {"id": "tc-1", "name": "calc", "arguments": {"expr": "1+1"}}
+    batch = asyncio.new_event_loop().run_until_complete(
+        fail_tool_calls_from_truncated_message([complete_tc], noop_emit)
+    )
+    if len(batch.results) == 1 and batch.results[0].is_error:
+        ok("完整 tool_call 也被标记为错误 (截断场景)", f"result={batch.results[0].result[:50]}...")
+    else:
+        fail("截断容错应标记错误")
+
+    # 20b: 不完整的 JSON arguments (字符串形式)
+    truncated_tc = {"id": "tc-2", "name": "calc", "arguments": '{"expr": "1+'}  # 不完整 JSON
+    from agent_loop import _is_tool_call_truncated
+    is_trunc = _is_tool_call_truncated(truncated_tc)
+    if is_trunc:
+        ok("检测到不完整 JSON arguments (截断)")
+    else:
+        fail("应检测到截断")
+
+    # 20c: 空 arguments
+    empty_tc = {"id": "tc-3", "name": "calc", "arguments": None}
+    is_trunc2 = _is_tool_call_truncated(empty_tc)
+    if is_trunc2:
+        ok("检测到空 arguments (截断)")
+    else:
+        fail("空 arguments 应判为截断")
+
+    # 20d: 完整 dict arguments
+    dict_tc = {"id": "tc-4", "name": "calc", "arguments": {"expr": "1+1"}}
+    is_trunc3 = _is_tool_call_truncated(dict_tc)
+    if not is_trunc3:
+        ok("dict arguments 不被判定为截断")
+    else:
+        fail("dict arguments 不应判为截断")
+
+    # 20e: 多个 tool_calls 批量处理
+    multi_tcs = [
+        {"id": "tc-5", "name": "calc", "arguments": {"a": 1}},
+        {"id": "tc-6", "name": "echo", "arguments": {"b": 2}},
+    ]
+    batch2 = asyncio.new_event_loop().run_until_complete(
+        fail_tool_calls_from_truncated_message(multi_tcs, noop_emit)
+    )
+    if len(batch2.results) == 2 and all(r.is_error for r in batch2.results):
+        ok("批量截断容错处理 2 个 tool_calls")
+    else:
+        fail("批量处理异常")
+
+    # 20f: 生成的 tool_result 消息有关联 ID
+    if batch2.messages and batch2.messages[0].tool_call_id == "tc-5":
+        ok("截断容错生成 tool_result 消息关联正确的 tool_call_id")
+    else:
+        fail("tool_result 消息关联 ID 异常")
+
+
+def test_followup_queue():
+    """测试 21: FollowUpQueue — 流后追加机制"""
+    section("单元测试 21: FollowUpQueue (流后追加)")
+
+    from agent_loop import FollowUpQueue
+
+    # 21a: 基本入队
+    fq = FollowUpQueue()
+    success = fq.enqueue("继续处理下一步")
+    if success:
+        ok("FollowUpQueue 入队成功")
+    else:
+        fail("入队应成功")
+
+    # 21b: 空文本不入队
+    success2 = fq.enqueue("")
+    if not success2:
+        ok("空文本不入队")
+    else:
+        fail("空文本应被拒绝")
+
+    success3 = fq.enqueue("   ")
+    if not success3:
+        ok("纯空白文本不入队")
+    else:
+        fail("纯空白文本应被拒绝")
+
+    # 21c: drain 消费
+    drained = asyncio.new_event_loop().run_until_complete(fq.drain())
+    if len(drained) == 1 and drained[0].content == "继续处理下一步":
+        ok("drain 消费 follow-up 成功")
+    else:
+        fail("drain 异常", f"len={len(drained)}")
+
+    # 21d: drain 后队列为空
+    drained2 = asyncio.new_event_loop().run_until_complete(fq.drain())
+    if len(drained2) == 0:
+        ok("drain 后队列为空")
+    else:
+        fail("drain 后队列应为空")
+
+    # 21e: reject_pending — 流结束后拒绝未处理
+    fq2 = FollowUpQueue()
+    fq2.enqueue("follow-up 1")
+    fq2.enqueue("follow-up 2")
+    count = fq2.reject_pending("流已结束")
+    if count == 2 and fq2.is_ended():
+        ok("reject_pending 拒绝 2 条", f"count={count}")
+    else:
+        fail("reject_pending 异常", f"count={count}")
+
+    # 21f: 流结束后入队被拒绝
+    success4 = fq2.enqueue("不应入队")
+    if not success4:
+        ok("流结束后入队被拒绝")
+    else:
+        fail("流结束后应拒绝入队")
+
+
+def test_followup_double_loop():
+    """测试 22: 双层循环 — follow-up 驱动外层循环"""
+    section("单元测试 22: 双层循环 (follow-up 外层循环)")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig, FollowUpQueue,
+    )
+
+    call_count = 0
+    fq = FollowUpQueue()
+
+    async def mock_stream_fn(ctx, cfg):
+        nonlocal call_count
+        call_count += 1
+        return AgentMessage(role="assistant", content=f"回答 {call_count}", stop_reason="stop")
+
+    async def get_follow_up_messages():
+        return await fq.drain()
+
+    config = AgentLoopConfig(
+        stream_fn=mock_stream_fn,
+        get_follow_up_messages=get_follow_up_messages,
+    )
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[],
+    )
+    prompts = [AgentMessage(role="user", content="第一问")]
+
+    # 预入队 2 条 follow-up
+    fq.enqueue("第二问")
+    fq.enqueue("第三问")
+
+    events, messages = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    # LLM 应被调用 2 次：第一问 + 2 条 follow-up 批量注入后 1 次
+    # （pi.dev 设计: 所有 pending 消息在下一轮 assistant 响应前批量注入）
+    if call_count == 2:
+        ok("follow-up 驱动 2 次 LLM 调用 (1 初始 + 1 批量 follow-up)")
+    else:
+        fail("应调用 2 次 LLM", f"实际 {call_count} 次")
+
+    # messages 应有 5 条：2 user(初始+follow-up1+follow-up2) + 2 assistant
+    # 实际: user("第一问"), assistant("回答 1"), user("第二问"), user("第三问"), assistant("回答 2")
+    if len(messages) == 5:
+        ok("messages 包含 5 条 (初始 1 轮 + 批量 follow-up 1 轮)")
+    else:
+        fail("messages 结构异常", f"len={len(messages)}")
+
+    # 检查 follow-up 消息内容
+    user_msgs = [m for m in messages if m.role == "user"]
+    if len(user_msgs) == 3 and user_msgs[1].content == "第二问" and user_msgs[2].content == "第三问":
+        ok("follow-up 消息按顺序注入")
+    else:
+        fail("follow-up 消息顺序异常", str([m.content for m in user_msgs]))
+
+
+def test_steer_injection_in_loop():
+    """测试 23: steer 消息在循环中注入"""
+    section("单元测试 23: steer 消息注入 Agent 循环")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig, ToolDefinition,
+    )
+
+    call_count = 0
+    steer_consumed = False
+    steer_texts_seen = []
+
+    async def mock_stream_fn(ctx, cfg):
+        nonlocal call_count
+        call_count += 1
+        # 记录 context 中是否有 steer 消息
+        for m in ctx.messages:
+            if "steer" in str(m.content).lower():
+                steer_texts_seen.append(str(m.content))
+
+        if call_count == 1:
+            return AgentMessage(
+                role="assistant",
+                content="调用工具",
+                tool_calls=[{"id": "tc-1", "name": "echo", "arguments": {"text": "hi"}}],
+                stop_reason="tool_use",
+            )
+        return AgentMessage(role="assistant", content="完成", stop_reason="stop")
+
+    async def echo_handler(args):
+        return args.get("text", "")
+
+    echo_tool = ToolDefinition(
+        name="echo",
+        description="回显",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=echo_handler,
+    )
+
+    steer_calls = 0
+
+    async def get_steering_messages():
+        nonlocal steer_calls
+        steer_calls += 1
+        # 第一次调用返回 steer 消息，之后返回空
+        if steer_calls == 1:
+            return [AgentMessage(role="user", content="[STEER] 调整方向：更详细")]
+        return []
+
+    config = AgentLoopConfig(
+        stream_fn=mock_stream_fn,
+        get_steering_messages=get_steering_messages,
+    )
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[echo_tool],
+    )
+    prompts = [AgentMessage(role="user", content="开始")]
+
+    events, messages = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    if steer_texts_seen:
+        ok("steer 消息被注入到 LLM context")
+    else:
+        fail("steer 消息未被注入")
+
+    # messages 中应包含 steer 消息
+    has_steer = any("STEER" in str(m.content) for m in messages)
+    if has_steer:
+        ok("steer 消息出现在最终 messages 列表中")
+    else:
+        fail("steer 消息未出现在 messages 中")
+
+
+def test_agent_loop_continue():
+    """测试 24: agent_loop_continue — 从现有上下文继续"""
+    section("单元测试 24: agent_loop_continue (从现有上下文继续)")
+
+    from agent_loop import (
+        agent_loop_continue, AgentContext, AgentMessage, AgentLoopConfig,
+    )
+
+    async def mock_stream_fn(ctx, cfg):
+        return AgentMessage(role="assistant", content="继续回答", stop_reason="stop")
+
+    config = AgentLoopConfig(stream_fn=mock_stream_fn)
+
+    # 上下文已有 user 消息（模拟之前的状态）
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[AgentMessage(role="user", content="之前的问题")],
+        tools=[],
+    )
+
+    events, messages = asyncio.new_event_loop().run_until_complete(
+        agent_loop_continue(context, config)
+    )
+
+    # 应生成 1 条 assistant 消息
+    if len(messages) == 1 and messages[0].role == "assistant":
+        ok("agent_loop_continue 正确生成 assistant 消息")
+    else:
+        fail("agent_loop_continue 异常", f"len={len(messages)}")
+
+    # context.messages 应有 2 条（user + assistant）
+    if len(context.messages) == 2:
+        ok("context.messages 包含原有 + 新消息")
+    else:
+        fail("context.messages 异常", f"len={len(context.messages)}")
+
+    # 24b: 从 assistant 消息继续应报错
+    context2 = AgentContext(
+        system_prompt="",
+        messages=[AgentMessage(role="assistant", content="前一条")],
+    )
+    try:
+        asyncio.new_event_loop().run_until_complete(
+            agent_loop_continue(context2, config)
+        )
+        fail("从 assistant 消息继续应报错")
+    except ValueError:
+        ok("从 assistant 消息继续正确报错")
+
+    # 24c: 空上下文继续应报错
+    context3 = AgentContext(system_prompt="", messages=[])
+    try:
+        asyncio.new_event_loop().run_until_complete(
+            agent_loop_continue(context3, config)
+        )
+        fail("空上下文继续应报错")
+    except ValueError:
+        ok("空上下文继续正确报错")
+
+
+def test_followup_chunks():
+    """测试 25: follow-up chunk 工厂函数"""
+    section("单元测试 25: follow-up chunk 工厂函数")
+
+    from stream import (
+        create_followup_queued_chunk,
+        create_followup_applied_chunk,
+        create_followup_rejected_chunk,
+    )
+
+    # 25a: followup_queued
+    queued = create_followup_queued_chunk("f1", "继续处理", 1)
+    if queued["type"] == "followup_queued" and queued["followupId"] == "f1" and queued["queueSize"] == 1:
+        ok("create_followup_queued_chunk 正确")
+    else:
+        fail("followup_queued chunk 结构错误")
+
+    # 25b: followup_applied
+    applied = create_followup_applied_chunk("f1", "继续处理", 2)
+    if applied["type"] == "followup_applied" and applied["turnIndex"] == 2:
+        ok("create_followup_applied_chunk 正确")
+    else:
+        fail("followup_applied chunk 结构错误")
+
+    # 25c: followup_rejected
+    rejected = create_followup_rejected_chunk("f1", "继续处理", "流已结束")
+    if rejected["type"] == "followup_rejected" and rejected["reason"] == "流已结束":
+        ok("create_followup_rejected_chunk 正确")
+    else:
+        fail("followup_rejected chunk 结构错误")
+
+
+def test_tool_execution_error_handling():
+    """测试 26: 工具执行错误处理 — 工具不存在/超时/异常"""
+    section("单元测试 26: 工具执行错误处理")
+
+    from agent_loop import (
+        execute_tool_calls, AgentContext, AgentMessage, AgentLoopConfig, ToolDefinition,
+    )
+
+    async def noop_emit(event):
+        pass
+
+    # 26a: 工具不存在
+    context = AgentContext(
+        system_prompt="",
+        messages=[],
+        tools=[],  # 没有注册任何工具
+    )
+    msg = AgentMessage(
+        role="assistant",
+        content="",
+        tool_calls=[{"id": "tc-1", "name": "nonexistent", "arguments": {}}],
+        stop_reason="tool_use",
+    )
+    config = AgentLoopConfig(stream_fn=None)  # 不会调用到
+    batch = asyncio.new_event_loop().run_until_complete(
+        execute_tool_calls(context, msg, config, None, noop_emit)
+    )
+    if len(batch.results) == 1 and batch.results[0].is_error and "not found" in batch.results[0].result:
+        ok("工具不存在时返回错误结果")
+    else:
+        fail("工具不存在应返回错误")
+
+    # 26b: 工具执行异常
+    async def error_handler(args):
+        raise RuntimeError("故意出错")
+
+    error_tool = ToolDefinition(
+        name="error_tool",
+        description="总会出错的工具",
+        parameters={"type": "object", "properties": {}},
+        handler=error_handler,
+    )
+    context2 = AgentContext(
+        system_prompt="",
+        messages=[],
+        tools=[error_tool],
+    )
+    msg2 = AgentMessage(
+        role="assistant",
+        content="",
+        tool_calls=[{"id": "tc-2", "name": "error_tool", "arguments": {}}],
+        stop_reason="tool_use",
+    )
+    batch2 = asyncio.new_event_loop().run_until_complete(
+        execute_tool_calls(context2, msg2, config, None, noop_emit)
+    )
+    if len(batch2.results) == 1 and batch2.results[0].is_error and "故意出错" in batch2.results[0].result:
+        ok("工具异常时返回错误结果")
+    else:
+        fail("工具异常应返回错误")
+
+    # 26c: 工具超时
+    async def slow_handler(args):
+        await asyncio.sleep(10)
+        return "不应到达"
+
+    slow_tool = ToolDefinition(
+        name="slow_tool",
+        description="慢工具",
+        parameters={"type": "object", "properties": {}},
+        handler=slow_handler,
+    )
+    context3 = AgentContext(
+        system_prompt="",
+        messages=[],
+        tools=[slow_tool],
+    )
+    msg3 = AgentMessage(
+        role="assistant",
+        content="",
+        tool_calls=[{"id": "tc-3", "name": "slow_tool", "arguments": {}}],
+        stop_reason="tool_use",
+    )
+    config_timeout = AgentLoopConfig(stream_fn=None, tool_timeout=0.1)
+    batch3 = asyncio.new_event_loop().run_until_complete(
+        execute_tool_calls(context3, msg3, config_timeout, None, noop_emit)
+    )
+    if len(batch3.results) == 1 and batch3.results[0].is_error and "timed out" in batch3.results[0].result:
+        ok("工具超时返回错误结果")
+    else:
+        fail("工具超时应返回错误")
+
+    # 26d: 并发执行多个工具
+    async def fast_handler(args):
+        return args.get("text", "")
+
+    fast_tool = ToolDefinition(
+        name="fast_tool",
+        description="快工具",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=fast_handler,
+    )
+    context4 = AgentContext(
+        system_prompt="",
+        messages=[],
+        tools=[fast_tool],
+    )
+    msg4 = AgentMessage(
+        role="assistant",
+        content="",
+        tool_calls=[
+            {"id": "tc-4", "name": "fast_tool", "arguments": {"text": "a"}},
+            {"id": "tc-5", "name": "fast_tool", "arguments": {"text": "b"}},
+            {"id": "tc-6", "name": "fast_tool", "arguments": {"text": "c"}},
+        ],
+        stop_reason="tool_use",
+    )
+    batch4 = asyncio.new_event_loop().run_until_complete(
+        execute_tool_calls(context4, msg4, config, None, noop_emit)
+    )
+    if len(batch4.results) == 3:
+        results_text = sorted([r.result for r in batch4.results])
+        if results_text == ["a", "b", "c"]:
+            ok("并发执行 3 个工具全部成功")
+        else:
+            fail("并发工具结果异常", str(results_text))
+    else:
+        fail("应并发执行 3 个工具", f"实际 {len(batch4.results)}")
+
+
+def test_truncated_tool_call_in_loop():
+    """测试 27: 截断容错在完整循环中的表现"""
+    section("单元测试 27: 截断容错在完整循环中")
+
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig, ToolDefinition,
+    )
+
+    call_count = 0
+
+    async def mock_stream_fn(ctx, cfg):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # 第一轮：输出被截断（stop_reason=length）
+            return AgentMessage(
+                role="assistant",
+                content="让我调用工",
+                tool_calls=[{"id": "tc-1", "name": "echo", "arguments": {"text": "truncated"}}],
+                stop_reason="length",
+            )
+        # 第二轮：模型重新生成，正常完成
+        return AgentMessage(role="assistant", content="已完成", stop_reason="stop")
+
+    async def echo_handler(args):
+        return args.get("text", "")
+
+    echo_tool = ToolDefinition(
+        name="echo",
+        description="回显",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=echo_handler,
+    )
+
+    config = AgentLoopConfig(stream_fn=mock_stream_fn)
+    context = AgentContext(
+        system_prompt="你是助手",
+        messages=[],
+        tools=[echo_tool],
+    )
+    prompts = [AgentMessage(role="user", content="测试截断")]
+
+    events, messages = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts, context, config)
+    )
+
+    # LLM 应被调用 2 次：第一次截断（tool_call 被标记错误），第二次正常
+    if call_count == 2:
+        ok("截断后模型重新生成 (2 次 LLM 调用)")
+    else:
+        fail("截断后应重新调用 LLM", f"实际 {call_count} 次")
+
+    # 应有 tool_result 消息且 is_error
+    tool_results = [m for m in messages if m.role == "tool_result"]
+    if tool_results and "truncated" in tool_results[0].content.lower() or "truncat" in tool_results[0].content.lower():
+        ok("截断 tool_call 生成错误 tool_result")
+    else:
+        # 检查是否包含截断相关信息
+        if tool_results and "truncat" in str(tool_results[0].content).lower():
+            ok("截断 tool_result 包含截断信息")
+        else:
+            fail("截断 tool_result 异常", str(tool_results[0].content[:80] if tool_results else "无 tool_result"))
+
+
+# ════════════════════════════════════════════════════════
 #  主入口
 # ════════════════════════════════════════════════════════
 
@@ -2075,6 +2941,20 @@ def run_unit_tests():
     test_stream_lifecycle()
     test_check_steer()
     test_steer_prompt_injection()
+    # Agent Loop 钩子化循环测试 (pi.dev 风格)
+    test_agent_loop_basic()
+    test_agent_loop_tool_calls()
+    test_transform_context_hook()
+    test_prepare_next_turn_hook()
+    test_should_stop_after_turn_hook()
+    test_fail_tool_calls_truncated()
+    test_followup_queue()
+    test_followup_double_loop()
+    test_steer_injection_in_loop()
+    test_agent_loop_continue()
+    test_followup_chunks()
+    test_tool_execution_error_handling()
+    test_truncated_tool_call_in_loop()
 
 
 def run_api_tests():
