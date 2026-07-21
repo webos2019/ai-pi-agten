@@ -265,6 +265,52 @@ def create_followup_rejected_chunk(
     }
 
 
+# ─── Sub-Agent Chunks (子代理) ─────────────────────────
+
+
+def create_sub_agent_start_chunk(
+    run_id: str,
+    agent_type: str,
+    task: str,
+    depth: int = 0,
+    parent_run_id: str | None = None,
+) -> dict[str, Any]:
+    """子代理启动 — 父 Agent 委托子任务给子代理"""
+    chunk: dict[str, Any] = {
+        "type": "sub_agent_start",
+        "runId": run_id,
+        "agentType": agent_type,
+        "task": task,
+        "depth": depth,
+    }
+    if parent_run_id:
+        chunk["parentRunId"] = parent_run_id
+    return chunk
+
+
+def create_sub_agent_end_chunk(
+    run_id: str,
+    agent_type: str,
+    status: str,  # "success" | "error"
+    result_summary: str | None = None,
+    duration_ms: int | None = None,
+    depth: int = 0,
+) -> dict[str, Any]:
+    """子代理结束 — 子代理执行完成或出错"""
+    chunk: dict[str, Any] = {
+        "type": "sub_agent_end",
+        "runId": run_id,
+        "agentType": agent_type,
+        "status": status,
+        "depth": depth,
+    }
+    if result_summary is not None:
+        chunk["resultSummary"] = result_summary
+    if duration_ms is not None:
+        chunk["durationMs"] = duration_ms
+    return chunk
+
+
 # ─── Agent Step Chunks ──────────────────────────────────
 
 # Agent 步骤动作类型
@@ -278,6 +324,9 @@ AGENT_STEP_ACTIONS = [
     "revision_eval",
     "final_answer",
 ]
+
+# 子代理状态
+SUB_AGENT_STATUSES = ["success", "error"]
 
 
 def create_agent_step_start_chunk(

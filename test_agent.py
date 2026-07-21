@@ -14,8 +14,8 @@ Pi Agent 完整测试套件
     9. SteerQueue + ActiveStreamRegistry — 流式插话核心
     10. stream/protocol.py — chunk 工厂完整验证 (含 steer chunk 边界)
     11. stream/lifecycle.py — 真流式实时性 + StreamLifecycle (含 steer_queue_id 传递)
-    12. _check_steer — Agent 步骤边界 steer 消费
-    13. _generate_tasklist_draft — steer_history 注入 prompt (mock 模型)
+    12. steer_controller.py — SteerController 统一 steer 应用逻辑
+    13. _generate_tasklist_draft — steer_controller 注入 prompt (mock 模型)
 
   API 端到端测试:
     14. steer API 端点 — POST/GET (TestClient, 不需服务器运行)
@@ -986,20 +986,25 @@ def test_steer_queue():
     else:
         fail("SteerEntry.to_dto 结构不正确")
 
-    # 9n: AgentState.steer_history 字段
+    # 9n: AgentState.steer_controller 字段
     from agent_runtime import AgentState
     state = AgentState(run_id="test", version_plan_uri="docs://versions/test.md")
-    if state.steer_history == []:
-        ok("AgentState.steer_history 初始化为空列表")
+    if state.steer_controller is None:
+        ok("AgentState.steer_controller 初始化为 None")
     else:
-        fail("steer_history 应初始化为空列表")
+        fail("steer_controller 应初始化为 None")
 
-    state.steer_history.append("调整方向 1")
-    state.steer_history.append("调整方向 2")
-    if len(state.steer_history) == 2:
-        ok("AgentState.steer_history 可追加", f"{len(state.steer_history)} 条")
+    # SteerController 由 run_tasklist_agent 在运行时创建并赋值
+    from steer_controller import SteerController
+    from stream import StreamWriter, StreamLifecycle
+    writer = StreamWriter()
+    lc = StreamLifecycle(writer)
+    ctrl = SteerController(None, lc)
+    state.steer_controller = ctrl
+    if state.steer_controller is ctrl:
+        ok("AgentState.steer_controller 可赋值")
     else:
-        fail("steer_history 追加异常")
+        fail("steer_controller 赋值异常")
 
     # 9o: steer chunk 工厂函数
     from stream import (
@@ -1396,20 +1401,20 @@ def test_stream_lifecycle():
 
 
 def test_check_steer():
-    """测试 12: agent_runtime._check_steer 步骤边界 steer 消费"""
-    section("单元测试 12: _check_steer 步骤边界 steer 消费")
+    """测试 12: SteerController.check_and_apply 步骤边界 steer 消费"""
+    section("单元测试 12: SteerController.check_and_apply 步骤边界 steer 消费")
     import asyncio
-    from agent_runtime import AgentState, _check_steer
     from stream import StreamWriter, StreamLifecycle
     from steer_queue import SteerQueue
+    from steer_controller import SteerController
 
     # 12a: 无 steer_queue → 返回空列表，不报错
     async def _test_no_queue():
         writer = StreamWriter()
         lc = StreamLifecycle(writer)
-        state = AgentState(version_plan_uri="docs://versions/test.md")
-        result = await _check_steer(lc, state, None, 3, "draft_tasklist")
-        if result == [] and len(state.steer_history) == 0:
+        ctrl = SteerController(None, lc)
+        result = await ctrl.check_and_apply(3, "draft_tasklist")
+        if result == [] and not ctrl.has_history:
             ok("无 steer_queue 时返回空列表")
         else:
             fail("无 steer_queue 应返回空列表")
@@ -1419,24 +1424,24 @@ def test_check_steer():
     async def _test_empty_queue():
         writer = StreamWriter()
         lc = StreamLifecycle(writer)
-        state = AgentState(version_plan_uri="docs://versions/test.md")
         sq = SteerQueue("test-sq-empty")
-        result = await _check_steer(lc, state, sq, 3, "draft_tasklist")
-        if result == [] and len(state.steer_history) == 0:
+        ctrl = SteerController(sq, lc)
+        result = await ctrl.check_and_apply(3, "draft_tasklist")
+        if result == [] and not ctrl.has_history:
             ok("空 steer 队列时返回空列表")
         else:
             fail("空队列应返回空列表")
     asyncio.new_event_loop().run_until_complete(_test_empty_queue())
 
-    # 12c: 有 steer → 消费 + mark_applied + steer_applied chunk + steer_history + 文本提示
+    # 12c: 有 steer → 消费 + mark_applied + steer_applied chunk + history + 文本提示
     async def _test_consume_steer():
         writer = StreamWriter()
         lc = StreamLifecycle(writer)
-        state = AgentState(version_plan_uri="docs://versions/test.md")
         sq = SteerQueue("test-sq-consume")
         sq.enqueue("调整方向：增加测试覆盖")
+        ctrl = SteerController(sq, lc)
 
-        result = await _check_steer(lc, state, sq, 5, "validate_tasklist")
+        result = await ctrl.check_and_apply(5, "validate_tasklist")
 
         chunks = writer.get_chunks()
         steer_applied_chunks = [c for c in chunks if c["type"] == "steer_applied"]
@@ -1451,31 +1456,31 @@ def test_check_steer():
             steer_applied_chunks[0]["steerText"] == "调整方向：增加测试覆盖",
             steer_applied_chunks[0]["appliedAtStep"] == 5,
             steer_applied_chunks[0]["actionType"] == "validate_tasklist",
-            len(state.steer_history) == 1,
-            state.steer_history[0] == "调整方向：增加测试覆盖",
+            len(ctrl.history) == 1,
+            ctrl.history[0] == "调整方向：增加测试覆盖",
             len(text_chunks) == 1,
             "已接收转向指令" in text_chunks[0]["content"],
             "调整方向：增加测试覆盖" in text_chunks[0]["content"],
         ]
         if all(checks):
-            ok("_check_steer 消费 steer 并发送 chunk + 注入 history + 文本提示")
+            ok("SteerController 消费 steer 并发送 chunk + 记录 history + 文本提示")
         else:
-            fail("_check_steer 消费逻辑错误",
+            fail("SteerController 消费逻辑错误",
                  f"result={len(result)}, applied_chunks={len(steer_applied_chunks)}, "
-                 f"history={len(state.steer_history)}, texts={len(text_chunks)}")
+                 f"history={len(ctrl.history)}, texts={len(text_chunks)}")
     asyncio.new_event_loop().run_until_complete(_test_consume_steer())
 
     # 12d: 多条 steer → 全部消费
     async def _test_multiple_steer():
         writer = StreamWriter()
         lc = StreamLifecycle(writer)
-        state = AgentState(version_plan_uri="docs://versions/test.md")
         sq = SteerQueue("test-sq-multi")
         sq.enqueue("steer 1")
         sq.enqueue("steer 2")
         sq.enqueue("steer 3")
+        ctrl = SteerController(sq, lc)
 
-        result = await _check_steer(lc, state, sq, 2, "plan_extract")
+        result = await ctrl.check_and_apply(2, "plan_extract")
 
         chunks = writer.get_chunks()
         steer_applied_chunks = [c for c in chunks if c["type"] == "steer_applied"]
@@ -1484,33 +1489,34 @@ def test_check_steer():
         if (len(result) == 3
                 and len(steer_applied_chunks) == 3
                 and len(text_chunks) == 3
-                and len(state.steer_history) == 3
-                and state.steer_history == ["steer 1", "steer 2", "steer 3"]
+                and len(ctrl.history) == 3
+                and ctrl.history == ["steer 1", "steer 2", "steer 3"]
                 and sq.pending_count() == 0):
-            ok("_check_steer 消费多条 steer", f"{len(result)} 条全部消费")
+            ok("SteerController 消费多条 steer", f"{len(result)} 条全部消费")
         else:
             fail("应消费 3 条 steer",
                  f"result={len(result)}, chunks={len(steer_applied_chunks)}, "
-                 f"history={len(state.steer_history)}")
+                 f"history={len(ctrl.history)}")
     asyncio.new_event_loop().run_until_complete(_test_multiple_steer())
 
     # 12e: 消费后队列清空（再次调用返回空）
     async def _test_drain_clears():
         writer = StreamWriter()
         lc = StreamLifecycle(writer)
-        state = AgentState(version_plan_uri="docs://versions/test.md")
         sq = SteerQueue("test-sq-clear")
         sq.enqueue("steer once")
+        ctrl = SteerController(sq, lc)
 
-        await _check_steer(lc, state, sq, 1, "read_resource")
+        await ctrl.check_and_apply(1, "read_resource")
 
         # 再次调用，队列应空
         writer2 = StreamWriter()
         lc2 = StreamLifecycle(writer2)
-        result2 = await _check_steer(lc2, state, sq, 2, "plan_extract")
+        ctrl2 = SteerController(sq, lc2)
+        result2 = await ctrl2.check_and_apply(2, "plan_extract")
 
         if result2 == [] and len(writer2.get_chunks()) == 0:
-            ok("_check_steer 消费后队列清空（二次调用无 chunk）")
+            ok("SteerController 消费后队列清空（二次调用无 chunk）")
         else:
             fail("消费后队列应清空", f"len={len(result2)}, chunks={len(writer2.get_chunks())}")
     asyncio.new_event_loop().run_until_complete(_test_drain_clears())
@@ -1519,25 +1525,54 @@ def test_check_steer():
     async def _test_ended_queue():
         writer = StreamWriter()
         lc = StreamLifecycle(writer)
-        state = AgentState(version_plan_uri="docs://versions/test.md")
         sq = SteerQueue("test-sq-ended")
         sq.reject_pending("流已结束")
+        ctrl = SteerController(sq, lc)
 
-        result = await _check_steer(lc, state, sq, 3, "draft_tasklist")
+        result = await ctrl.check_and_apply(3, "draft_tasklist")
 
-        if result == [] and len(state.steer_history) == 0:
-            ok("_check_steer 对已结束队列返回空列表")
+        if result == [] and not ctrl.has_history:
+            ok("SteerController 对已结束队列返回空列表")
         else:
             fail("已结束队列应返回空列表")
     asyncio.new_event_loop().run_until_complete(_test_ended_queue())
 
+    # 12g: format_for_prompt — 无 steer 时返回空字符串
+    ctrl_empty = SteerController(None, StreamLifecycle(StreamWriter()))
+    if ctrl_empty.format_for_prompt() == "":
+        ok("format_for_prompt 无 steer 时返回空字符串")
+    else:
+        fail("format_for_prompt 无 steer 时应返回空字符串")
+
+    # 12h: format_for_prompt — 有 steer 时返回注入文本
+    async def _test_format_prompt():
+        writer = StreamWriter()
+        lc = StreamLifecycle(writer)
+        sq = SteerQueue("test-sq-fmt")
+        sq.enqueue("方向 A")
+        sq.enqueue("方向 B")
+        ctrl = SteerController(sq, lc)
+        await ctrl.check_and_apply(1, "test")
+        prompt = ctrl.format_for_prompt()
+        if ("转向指令" in prompt
+                and "方向 A" in prompt
+                and "方向 B" in prompt
+                and "调整草稿" in prompt):
+            ok("format_for_prompt 有 steer 时返回注入文本")
+        else:
+            fail("format_for_prompt 应包含 steer 注入文本", prompt[:80])
+    asyncio.new_event_loop().run_until_complete(_test_format_prompt())
+
 
 def test_steer_prompt_injection():
-    """测试 13: _generate_tasklist_draft steer_history 注入 prompt"""
-    section("单元测试 13: _generate_tasklist_draft steer_history 注入")
+    """测试 13: _generate_tasklist_draft steer_controller 注入 prompt"""
+    section("单元测试 13: _generate_tasklist_draft steer_controller 注入")
     import asyncio
     import agent_runtime
     from agent_runtime import AgentState, _generate_tasklist_draft
+    from steer_controller import SteerController
+    from stream import StreamWriter, StreamLifecycle
+    from steer_queue import SteerQueue
 
     # 保存原始函数，测试后恢复
     original_completion = agent_runtime.chat_completion
@@ -1562,7 +1597,7 @@ def test_steer_prompt_injection():
 
     agent_runtime.chat_completion = mock_completion
     try:
-        # 13a: 无 steer_history → prompt 不含 steer 注入
+        # 13a: 无 steer_controller → prompt 不含 steer 注入
         captured_messages.clear()
         state = AgentState(version_plan_uri="docs://versions/test.md")
         asyncio.new_event_loop().run_until_complete(
@@ -1571,45 +1606,58 @@ def test_steer_prompt_injection():
         if captured_messages:
             user_content = captured_messages[-1][-1]["content"]
             if "转向指令" not in user_content and "插话" not in user_content:
-                ok("无 steer_history 时 prompt 不含 steer 注入")
+                ok("无 steer_controller 时 prompt 不含 steer 注入")
             else:
-                fail("无 steer_history 时 prompt 不应含 steer 注入", user_content[:80])
+                fail("无 steer_controller 时 prompt 不应含 steer 注入", user_content[:80])
         else:
             fail("应调用 chat_completion")
 
-        # 13b: 有 steer_history → prompt 包含 steer 注入文本
-        captured_messages.clear()
-        state2 = AgentState(version_plan_uri="docs://versions/test.md")
-        state2.steer_history = ["增加测试覆盖", "简化步骤"]
-        asyncio.new_event_loop().run_until_complete(
-            _generate_tasklist_draft(state2, "plan text", is_revision=False)
-        )
+        # 13b: 有 steer_controller + history → prompt 包含 steer 注入文本
+        async def _test_13b():
+            captured_messages.clear()
+            state2 = AgentState(version_plan_uri="docs://versions/test.md")
+            writer = StreamWriter()
+            lc = StreamLifecycle(writer)
+            sq = SteerQueue("test-13b")
+            sq.enqueue("增加测试覆盖")
+            sq.enqueue("简化步骤")
+            ctrl = SteerController(sq, lc)
+            await ctrl.check_and_apply(1, "test")
+            state2.steer_controller = ctrl
+            await _generate_tasklist_draft(state2, "plan text", is_revision=False)
+        asyncio.new_event_loop().run_until_complete(_test_13b())
         if captured_messages:
             user_content = captured_messages[-1][-1]["content"]
             if ("转向指令" in user_content
                     and "增加测试覆盖" in user_content
                     and "简化步骤" in user_content
                     and "调整草稿" in user_content):
-                ok("有 steer_history 时 prompt 包含 steer 注入")
+                ok("有 steer_controller 时 prompt 包含 steer 注入")
             else:
-                fail("有 steer_history 时 prompt 应包含 steer 注入", user_content[:100])
+                fail("有 steer_controller 时 prompt 应包含 steer 注入", user_content[:100])
         else:
             fail("应调用 chat_completion")
 
-        # 13c: 修正模式 + steer_history → prompt 同时包含修正指令和 steer 注入
-        captured_messages.clear()
-        state3 = AgentState(version_plan_uri="docs://versions/test.md")
-        state3.steer_history = ["调整方向"]
-        asyncio.new_event_loop().run_until_complete(
-            _generate_tasklist_draft(state3, "plan text", is_revision=True, issues="缺少标题")
-        )
+        # 13c: 修正模式 + steer_controller → prompt 同时包含修正指令和 steer 注入
+        async def _test_13c():
+            captured_messages.clear()
+            state3 = AgentState(version_plan_uri="docs://versions/test.md")
+            writer = StreamWriter()
+            lc = StreamLifecycle(writer)
+            sq = SteerQueue("test-13c")
+            sq.enqueue("调整方向")
+            ctrl = SteerController(sq, lc)
+            await ctrl.check_and_apply(1, "test")
+            state3.steer_controller = ctrl
+            await _generate_tasklist_draft(state3, "plan text", is_revision=True, issues="缺少标题")
+        asyncio.new_event_loop().run_until_complete(_test_13c())
         if captured_messages:
             user_content = captured_messages[-1][-1]["content"]
             if ("阻断性问题" in user_content
                     and "转向指令" in user_content
                     and "调整方向" in user_content
                     and "缺少标题" in user_content):
-                ok("修正模式 + steer_history 时 prompt 同时包含两者")
+                ok("修正模式 + steer_controller 时 prompt 同时包含两者")
             else:
                 fail("修正模式 + steer 应同时包含修正和 steer 注入")
         else:
@@ -3131,6 +3179,429 @@ def test_truncated_tool_call_in_loop():
         fail("截断错误应进入 context 供 LLM 看到")
 
 
+def test_agent_loop_safety_limits():
+    """测试 27e: Agent Loop 安全保护 — 截断上限 / 异常捕获 / 最大轮次"""
+    section("单元测试 27e: Agent Loop 安全保护 (P0+P1)")
+    from agent_loop import (
+        agent_loop, AgentContext, AgentMessage, AgentLoopConfig, ToolDefinition,
+    )
+
+    # 27e-a: 截断重试上限 — 连续截断超过 max_truncation_retries 后终止
+    call_count_a = 0
+
+    async def mock_stream_fn_truncation(ctx, cfg):
+        nonlocal call_count_a
+        call_count_a += 1
+        # 每次都返回截断的 tool_call
+        return AgentMessage(
+            role="assistant",
+            content="",
+            tool_calls=[{"id": f"tc-{call_count_a}", "name": "echo", "arguments": '{"text": "incom'}],
+            stop_reason="length",
+        )
+
+    async def echo_handler_a(args):
+        return args.get("text", "")
+
+    echo_tool_a = ToolDefinition(
+        name="echo",
+        description="回显",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=echo_handler_a,
+    )
+
+    config_a = AgentLoopConfig(
+        stream_fn=mock_stream_fn_truncation,
+        max_truncation_retries=2,
+    )
+    context_a = AgentContext(system_prompt="", messages=[], tools=[echo_tool_a])
+    prompts_a = [AgentMessage(role="user", content="测试截断上限")]
+
+    events_a, messages_a = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts_a, context_a, config_a)
+    )
+
+    # max_truncation_retries=2: 截断 2 次后第 3 次 count=3 > 2 → 终止
+    # LLM 调用: 第1次(count=1) → 第2次(count=2) → 第3次(count=3>2,终止) = 3次
+    if call_count_a <= 3:
+        ok(f"截断重试上限生效 (LLM 调用 {call_count_a} 次后终止, max=2)")
+    else:
+        fail("截断重试上限未生效", f"LLM 被调用 {call_count_a} 次 (应 <=3)")
+
+    # 验证循环确实终止了 (有 agent_end 事件)
+    agent_end_events_a = [e for e in events_a if e.type == "agent_end"]
+    if agent_end_events_a:
+        ok("截断上限终止后发射 agent_end 事件")
+    else:
+        fail("截断上限终止后应发射 agent_end 事件")
+
+    # 27e-b: stream_fn 异常捕获 — LLM API 抛异常时不崩溃
+    async def mock_stream_fn_error(ctx, cfg):
+        raise RuntimeError("LLM API 超时")
+
+    config_b = AgentLoopConfig(stream_fn=mock_stream_fn_error)
+    context_b = AgentContext(system_prompt="", messages=[], tools=[])
+    prompts_b = [AgentMessage(role="user", content="测试异常捕获")]
+
+    events_b, messages_b = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts_b, context_b, config_b)
+    )
+
+    # 验证没有崩溃，且有 error stop_reason
+    error_messages = [m for m in messages_b if m.role == "assistant" and m.stop_reason == "error"]
+    if error_messages:
+        ok("stream_fn 异常被捕获，返回 error stop_reason")
+    else:
+        fail("stream_fn 异常应被捕获")
+
+    # 验证 agent_end 事件存在
+    agent_end_b = [e for e in events_b if e.type == "agent_end"]
+    if agent_end_b:
+        ok("stream_fn 异常后仍发射 agent_end 事件")
+    else:
+        fail("stream_fn 异常后应发射 agent_end 事件")
+
+    # 27e-c: 最大轮次保护 — 超过 max_turns 后强制终止
+    call_count_c = 0
+
+    async def mock_stream_fn_infinite(ctx, cfg):
+        nonlocal call_count_c
+        call_count_c += 1
+        # 每次都请求工具调用，永不停止
+        return AgentMessage(
+            role="assistant",
+            content="",
+            tool_calls=[{"id": f"tc-{call_count_c}", "name": "echo", "arguments": {"text": "loop"}}],
+            stop_reason="tool_use",
+        )
+
+    async def echo_handler_c(args):
+        return args.get("text", "")
+
+    echo_tool_c = ToolDefinition(
+        name="echo",
+        description="回显",
+        parameters={"type": "object", "properties": {"text": {"type": "string"}}},
+        handler=echo_handler_c,
+    )
+
+    config_c = AgentLoopConfig(
+        stream_fn=mock_stream_fn_infinite,
+        max_turns=5,
+    )
+    context_c = AgentContext(system_prompt="", messages=[], tools=[echo_tool_c])
+    prompts_c = [AgentMessage(role="user", content="测试轮次上限")]
+
+    events_c, messages_c = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts_c, context_c, config_c)
+    )
+
+    # max_turns=5 → 最多 5 轮后终止
+    if call_count_c <= 5:
+        ok(f"最大轮次保护生效 (LLM 调用 {call_count_c} 次后终止, max_turns=5)")
+    else:
+        fail("最大轮次保护未生效", f"LLM 被调用 {call_count_c} 次 (应 <=5)")
+
+    # 验证 agent_end 事件存在
+    agent_end_c = [e for e in events_c if e.type == "agent_end"]
+    if agent_end_c:
+        ok("轮次上限终止后发射 agent_end 事件")
+    else:
+        fail("轮次上限终止后应发射 agent_end 事件")
+
+    # 27e-d: 截断后恢复正常 — 计数器重置验证
+    call_count_d = 0
+
+    async def mock_stream_fn_recover(ctx, cfg):
+        nonlocal call_count_d
+        call_count_d += 1
+        if call_count_d <= 2:
+            # 前两次截断
+            return AgentMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": f"tc-{call_count_d}", "name": "echo", "arguments": '{"text": "bad'}],
+                stop_reason="length",
+            )
+        elif call_count_d == 3:
+            # 第三次正常工具调用
+            return AgentMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": "tc-ok-d", "name": "echo", "arguments": {"text": "ok"}}],
+                stop_reason="tool_use",
+            )
+        else:
+            return AgentMessage(role="assistant", content="完成", stop_reason="stop")
+
+    config_d = AgentLoopConfig(
+        stream_fn=mock_stream_fn_recover,
+        max_truncation_retries=3,
+    )
+    context_d = AgentContext(system_prompt="", messages=[], tools=[echo_tool_c])
+    prompts_d = [AgentMessage(role="user", content="测试截断恢复")]
+
+    events_d, messages_d = asyncio.new_event_loop().run_until_complete(
+        agent_loop(prompts_d, context_d, config_d)
+    )
+
+    # 截断 2 次 (< max=3) 后恢复 → LLM 调用 4 次: 截断×2 + 工具×1 + 总结×1
+    if call_count_d == 4:
+        ok("截断恢复后计数器重置正常 (2次截断 < max=3, 恢复成功)")
+    else:
+        fail("截断恢复异常", f"LLM 调用 {call_count_d} 次 (期望 4)")
+
+
+def test_sub_agent():
+    """测试 27f: 子代理系统 — 类型定义 / 运行 / 深度限制 / 流式事件 / 工具注册"""
+    section("单元测试 27f: 子代理系统 (Sub-Agent)")
+
+    import sub_agent as sub_agent_mod
+    from sub_agent import (
+        SUB_AGENT_TYPES, get_sub_agent_type,
+        list_sub_agent_types, run_sub_agent, MAX_SUB_AGENT_DEPTH,
+    )
+    from stream import create_sub_agent_start_chunk, create_sub_agent_end_chunk
+
+    # 27f-a: 子代理类型定义验证
+    if len(SUB_AGENT_TYPES) >= 3:
+        ok(f"预定义子代理类型数量 >= 3 (实际: {len(SUB_AGENT_TYPES)})")
+    else:
+        fail("预定义子代理类型不足 3 个", f"实际: {len(SUB_AGENT_TYPES)}")
+
+    for name in ["research", "analysis", "writer"]:
+        st = get_sub_agent_type(name)
+        if st and st.system_prompt and isinstance(st.tool_names, list):
+            ok(f"子代理类型 '{name}' 定义完整 (tools: {st.tool_names})")
+        else:
+            fail(f"子代理类型 '{name}' 定义不完整")
+
+    # 27f-b: 未知子代理类型 → 返回错误
+    result_b = asyncio.new_event_loop().run_until_complete(
+        run_sub_agent("unknown_type", "test task", {})
+    )
+    if "错误" in result_b and "未知子代理类型" in result_b:
+        ok("未知子代理类型返回错误信息")
+    else:
+        fail("未知子代理类型应返回错误", result_b[:100])
+
+    # 27f-c: 深度限制 → 超过 MAX_SUB_AGENT_DEPTH 时拒绝
+    result_c = asyncio.new_event_loop().run_until_complete(
+        run_sub_agent("research", "test task", {}, depth=MAX_SUB_AGENT_DEPTH)
+    )
+    if "嵌套深度超过上限" in result_c:
+        ok(f"深度限制生效 (MAX_SUB_AGENT_DEPTH={MAX_SUB_AGENT_DEPTH})")
+    else:
+        fail("深度限制未生效", result_c[:100])
+
+    # 27f-d: 子代理运行 (mock LLM) → 返回结果
+    original_fn = sub_agent_mod.chat_completion
+
+    async def mock_chat_completion(messages, tools=None, **kwargs):
+        class MockMessage:
+            content = "这是子代理的分析结果"
+            tool_calls = None
+        class MockChoice:
+            message = MockMessage()
+            finish_reason = "stop"
+        class MockResponse:
+            choices = [MockChoice()]
+        return MockResponse()
+
+    sub_agent_mod.chat_completion = mock_chat_completion
+
+    try:
+        result_d = asyncio.new_event_loop().run_until_complete(
+            run_sub_agent("writer", "写一段摘要", {})
+        )
+        if "子代理的分析结果" in result_d:
+            ok("子代理运行成功，返回了 LLM 结果")
+        else:
+            fail("子代理运行结果异常", result_d[:100])
+    finally:
+        sub_agent_mod.chat_completion = original_fn
+
+    # 27f-e: 流式事件 — sub_agent_start / sub_agent_end 被正确发射
+    chunks_e = []
+
+    class MockLifecycle:
+        def write_chunk(self, chunk):
+            chunks_e.append(chunk)
+
+    lifecycle_e = MockLifecycle()
+    context_e = {"_lifecycle": lifecycle_e, "_run_id": "parent-123"}
+
+    sub_agent_mod.chat_completion = mock_chat_completion
+
+    try:
+        result_e = asyncio.new_event_loop().run_until_complete(
+            run_sub_agent("analysis", "分析数据", context_e)
+        )
+
+        sub_start_chunks = [c for c in chunks_e if c.get("type") == "sub_agent_start"]
+        sub_end_chunks = [c for c in chunks_e if c.get("type") == "sub_agent_end"]
+
+        if sub_start_chunks:
+            sc = sub_start_chunks[0]
+            if sc.get("agentType") == "analysis" and sc.get("parentRunId") == "parent-123":
+                ok("sub_agent_start chunk 正确 (agentType + parentRunId)")
+            else:
+                fail("sub_agent_start chunk 字段不正确", str(sc)[:100])
+        else:
+            fail("未发射 sub_agent_start chunk")
+
+        if sub_end_chunks:
+            ec = sub_end_chunks[0]
+            if ec.get("status") == "success" and ec.get("agentType") == "analysis":
+                ok("sub_agent_end chunk 正确 (status=success)")
+            else:
+                fail("sub_agent_end chunk 字段不正确", str(ec)[:100])
+        else:
+            fail("未发射 sub_agent_end chunk")
+    finally:
+        sub_agent_mod.chat_completion = original_fn
+
+    # 27f-f: delegate_sub_agent 工具已注册
+    tool = tool_registry.get("delegate_sub_agent")
+    if tool:
+        spec = tool.get_openai_tool_spec()
+        if spec["function"]["name"] == "delegate_sub_agent":
+            ok("delegate_sub_agent 工具已注册到 tool_registry")
+        else:
+            fail("delegate_sub_agent 工具名称不正确")
+    else:
+        fail("delegate_sub_agent 工具未注册")
+
+    # 27f-g: 子代理 chunk 创建函数
+    start_chunk = create_sub_agent_start_chunk(
+        run_id="test-run", agent_type="research", task="test", depth=0,
+    )
+    if start_chunk["type"] == "sub_agent_start" and start_chunk["agentType"] == "research":
+        ok("create_sub_agent_start_chunk 正确")
+    else:
+        fail("create_sub_agent_start_chunk 异常")
+
+    end_chunk = create_sub_agent_end_chunk(
+        run_id="test-run", agent_type="research", status="success",
+        result_summary="done", duration_ms=100, depth=0,
+    )
+    if end_chunk["type"] == "sub_agent_end" and end_chunk["status"] == "success":
+        ok("create_sub_agent_end_chunk 正确")
+    else:
+        fail("create_sub_agent_end_chunk 异常")
+
+    # 27f-h: 子代理工具通过 tool_registry.execute 执行
+    sub_agent_mod.chat_completion = mock_chat_completion
+
+    try:
+        result_h = asyncio.new_event_loop().run_until_complete(
+            tool_registry.execute("delegate_sub_agent", {
+                "task": "测试任务",
+                "agent_type": "writer",
+            }, {})
+        )
+
+        parsed = json.loads(result_h)
+        if parsed.get("result") == "这是子代理的分析结果":
+            ok("delegate_sub_agent 通过 tool_registry.execute 执行成功")
+        elif parsed.get("error"):
+            fail("工具执行返回错误", str(parsed.get("error"))[:100])
+        else:
+            fail("工具执行结果异常", result_h[:100])
+    finally:
+        sub_agent_mod.chat_completion = original_fn
+
+    # 27f-i: 子代理与父代理集成 — 父代理通过 tool_call 调用子代理
+    from agent_loop import (
+        agent_loop as parent_agent_loop,
+        AgentContext as ParentContext,
+        AgentMessage as ParentMessage,
+        AgentLoopConfig as ParentConfig,
+        ToolDefinition as ParentToolDef,
+    )
+
+    parent_call_count = 0
+
+    async def mock_parent_stream_fn(ctx, cfg):
+        nonlocal parent_call_count
+        parent_call_count += 1
+        if parent_call_count == 1:
+            # 第一轮: 父代理调用 delegate_sub_agent 工具
+            return ParentMessage(
+                role="assistant",
+                content="",
+                tool_calls=[{
+                    "id": "parent-tc-1",
+                    "name": "delegate_sub_agent",
+                    "arguments": {"task": "写一首诗", "agent_type": "writer"},
+                }],
+                stop_reason="tool_use",
+            )
+        else:
+            # 第二轮: 父代理看到子代理结果后生成最终回答
+            return ParentMessage(
+                role="assistant",
+                content="根据子代理的结果，这是一首诗：...",
+                stop_reason="stop",
+            )
+
+    # 桥接 delegate_sub_agent 工具为 agent_loop 的 ToolDefinition
+    async def delegate_handler(args):
+        return await tool_registry.execute("delegate_sub_agent", args, {})
+
+    delegate_tool = ParentToolDef(
+        name="delegate_sub_agent",
+        description="委托子代理",
+        parameters={
+            "type": "object",
+            "properties": {
+                "task": {"type": "string"},
+                "agent_type": {"type": "string"},
+            },
+            "required": ["task"],
+        },
+        handler=delegate_handler,
+    )
+
+    parent_config = ParentConfig(
+        stream_fn=mock_parent_stream_fn,
+        max_turns=5,
+    )
+    parent_context = ParentContext(
+        system_prompt="你是父代理",
+        messages=[],
+        tools=[delegate_tool],
+    )
+    parent_prompts = [ParentMessage(role="user", content="帮我写一首诗")]
+
+    sub_agent_mod.chat_completion = mock_chat_completion
+
+    try:
+        events_i, messages_i = asyncio.new_event_loop().run_until_complete(
+            parent_agent_loop(parent_prompts, parent_context, parent_config)
+        )
+
+        # 验证父代理调用了子代理工具
+        tool_results = []
+        for msg in messages_i:
+            if msg.role == "tool_result" and msg.content:
+                tool_results.append(msg.content)
+
+        if any("子代理的分析结果" in tr for tr in tool_results):
+            ok("父代理通过 tool_call 成功调用了子代理并获取结果")
+        else:
+            fail("父代理未能获取子代理结果")
+
+        # 验证父代理最终生成了回答
+        final_assistant = [m for m in messages_i if m.role == "assistant" and m.content]
+        if final_assistant and "诗" in final_assistant[-1].content:
+            ok("父代理根据子代理结果生成了最终回答")
+        else:
+            fail("父代理未生成最终回答")
+    finally:
+        sub_agent_mod.chat_completion = original_fn
+
+
 # ════════════════════════════════════════════════════════
 #  Chat Orchestrator 集成测试 (阶段一: agent_loop 迁移)
 # ════════════════════════════════════════════════════════
@@ -4150,6 +4621,9 @@ def run_unit_tests():
     test_followup_chunks()
     test_tool_execution_error_handling()
     test_truncated_tool_call_in_loop()
+    test_agent_loop_safety_limits()
+    # 子代理系统测试
+    test_sub_agent()
     # Chat Orchestrator 集成测试 (阶段一: agent_loop 迁移)
     test_orchestrator_message_conversion()
     test_orchestrator_stop_reason_mapping()

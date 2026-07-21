@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback } from 'react'
 import type { ChatMessage, ChatBlock, ChatStatus, StructuredRequest, UploadedFile } from '../types'
 import { useStreamTextBuffer } from './useStreamTextBuffer'
+import { saveSnapshot } from '../lib/localChatStore'
+import { projectRecoverableMessages } from '../lib/stableSnapshot'
 
 const MAX_CONTEXT_ROUNDS = 8
 
@@ -140,6 +142,19 @@ export function useChat() {
         setStatus('idle')
     }, [reset])
 
+    // ─── 从本地快照恢复 (IndexedDB) ──────────────────
+    // 与 hydrate 不同：这里恢复的是完整 ChatMessage (含 blocks)，
+    // 用于刷新后的即时展示。服务端 hydration 数据只有纯文本，
+    // 本地快照保留了富 UI blocks (tool_call, agent_step 等)。
+    const hydrateFromLocal = useCallback((messages: ChatMessage[]) => {
+        setMessages(messages)
+        setError(null)
+        setStreamingBlocks([])
+        setStreamingText('')
+        reset()
+        setStatus('idle')
+    }, [reset])
+
     // ─── 清空到空白草稿 ────────────────────────────────
     const clearToDraft = useCallback(() => {
         setMessages([])
@@ -235,21 +250,24 @@ export function useChat() {
                         const chunk = JSON.parse(line)
                         addChunk(chunk)
                         if (chunk.type === 'text') collectedText += chunk.content || ''
-                        collectedBlocks.push({
-                            type: chunk.type, content: chunk.content || '',
-                            toolCallId: chunk.toolCallId, toolName: chunk.toolName,
-                            toolArgs: chunk.toolArgs, toolResult: chunk.toolResult,
-                            isValid: chunk.isValid, resourceName: chunk.resourceName,
-                            resourceUri: chunk.resourceUri, serverId: chunk.serverId,
-                            isTruncated: chunk.isTruncated, previewChars: chunk.previewChars,
-                            actionType: chunk.actionType, title: chunk.title,
-                            stepIndex: chunk.stepIndex, status: chunk.status,
-                            summary: chunk.summary, durationMs: chunk.durationMs,
-                            runId: chunk.runId,
-                            steerId: chunk.steerId, steerText: chunk.steerText,
-                            appliedAtStep: chunk.appliedAtStep, queueSize: chunk.queueSize,
-                            reason: chunk.reason,
-                        })
+                        // 只收集可展示的 block 类型，过滤 start/done/error 等控制 chunk
+                        if (chunk.type !== 'start' && chunk.type !== 'done' && chunk.type !== 'error' && chunk.type !== 'recovering' && chunk.type !== 'recovery_fallback') {
+                            collectedBlocks.push({
+                                type: chunk.type, content: chunk.content || '',
+                                toolCallId: chunk.toolCallId, toolName: chunk.toolName,
+                                toolArgs: chunk.toolArgs, toolResult: chunk.toolResult,
+                                isValid: chunk.isValid, resourceName: chunk.resourceName,
+                                resourceUri: chunk.resourceUri, serverId: chunk.serverId,
+                                isTruncated: chunk.isTruncated, previewChars: chunk.previewChars,
+                                actionType: chunk.actionType, title: chunk.title,
+                                stepIndex: chunk.stepIndex, status: chunk.status,
+                                summary: chunk.summary, durationMs: chunk.durationMs,
+                                runId: chunk.runId,
+                                steerId: chunk.steerId, steerText: chunk.steerText,
+                                appliedAtStep: chunk.appliedAtStep, queueSize: chunk.queueSize,
+                                reason: chunk.reason,
+                            })
+                        }
                         if (chunk.type === 'done') isDone = true
                     } catch { /* skip */ }
                     if (isDone) break
@@ -260,11 +278,29 @@ export function useChat() {
             flushAndClear()
 
             const assistantMessage: ChatMessage = { role: 'assistant', content: collectedText, blocks: collectedBlocks }
-            setMessages(prev => trimMsgs([...prev, assistantMessage]))
+
+            // ⚠️ 必须用 prev（包含刚添加的 user 消息），不能用闭包中的 messages（旧值）
+            let finalMessages: ChatMessage[] = []
+            setMessages(prev => {
+                finalMessages = trimMsgs([...prev, assistantMessage])
+                return finalMessages
+            })
             setStreamingBlocks([])
             setStreamingText('')
             setSteerQueueId(null)
             setStatus('idle')
+
+            // ─── 流式成功完成后提交本地快照 ──────────────
+            // stableSnapshot 过滤 pending 状态/空消息，只持久化稳定内容
+            // 用微任务延迟读取 finalMessages，确保 setMessages 回调已执行
+            if (sessionContext?.conversationId) {
+                queueMicrotask(() => {
+                    if (finalMessages.length > 0) {
+                        const stable = projectRecoverableMessages(finalMessages)
+                        saveSnapshot(sessionContext.conversationId, stable, Date.now()).catch(() => {})
+                    }
+                })
+            }
         } catch (err: any) {
             flushAndClear()
             if (err.name === 'AbortError') { setStatus('idle'); return }
@@ -335,7 +371,7 @@ export function useChat() {
         messages, status, error, isStreaming,
         streamingBlocks, streamingText,
         sendMessage, cancelStream, regenerate, retry,
-        hydrate, clearToDraft, setStatus,
+        hydrate, hydrateFromLocal, clearToDraft, setStatus,
         steerQueueId, steerError, sendSteer,
     }
 }

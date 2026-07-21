@@ -22,7 +22,10 @@ from .protocol import (
     create_followup_queued_chunk,
     create_followup_applied_chunk,
     create_followup_rejected_chunk,
+    create_sub_agent_start_chunk,
+    create_sub_agent_end_chunk,
     AGENT_STEP_ACTIONS,
+    SUB_AGENT_STATUSES,
 )
 from .lifecycle import StreamLifecycle, StreamWriter, create_ndjson_stream
 
@@ -48,7 +51,10 @@ __all__ = [
     "create_followup_queued_chunk",
     "create_followup_applied_chunk",
     "create_followup_rejected_chunk",
+    "create_sub_agent_start_chunk",
+    "create_sub_agent_end_chunk",
     "AGENT_STEP_ACTIONS",
+    "SUB_AGENT_STATUSES",
     "StreamLifecycle",
     "StreamWriter",
     "create_ndjson_stream",

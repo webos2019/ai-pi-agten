@@ -20,6 +20,45 @@ export default function App() {
     const conversations = useConversations()
     const inputHistory = useInputHistory()
 
+    // ─── local-first 恢复: 刷新后先从 IndexedDB 加载快照 ────
+    useEffect(() => {
+        if (!conversations.sessionId) return
+        let cancelled = false
+
+        const recover = async () => {
+            const localResult = await conversations.recoverFromLocal()
+            if (cancelled || !localResult) return
+
+            // 即时展示本地快照
+            chat.hydrateFromLocal(localResult.messages)
+            conversations.setIsReadOnly(false)
+
+            // 后台静默校准: 请求服务端 hydration
+            const calibration = await conversations.calibrateWithServer(localResult.conversationId)
+            if (cancelled) return
+
+            if (!calibration.available) {
+                // 服务端不可用 → 只读降级
+                conversations.setIsReadOnly(true)
+            } else if (calibration.data) {
+                // 服务端可用 → 用纯文本 hydration 数据替换
+                // 注意: 服务端 hydration 只有纯文本，不包含 blocks
+                // 所以只在服务端消息数 > 本地快照消息数时才替换
+                // (说明本地快照可能过期)
+                const serverMsgCount = calibration.data.messages?.length || 0
+                const localMsgCount = localResult.messages.length
+                if (serverMsgCount > localMsgCount) {
+                    chat.hydrate(calibration.data)
+                }
+                conversations.setIsReadOnly(false)
+            }
+        }
+
+        recover()
+        return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [conversations.sessionId])
+
     // Fetch public IP on mount
     useEffect(() => {
         fetch('https://api.ipify.org?format=json')
@@ -49,12 +88,20 @@ export default function App() {
         conversations.startNewDraft()
     }, [chat, conversations])
 
-    // ─── 切换会话 (服务端校验 + hydration) ─────────────
+    // ─── 切换会话 (local-first + 服务端校验) ─────────────
     const handleSelectConversation = useCallback(async (conversationId: string) => {
         if (chat.isStreaming) return
-        const data = await conversations.selectConversation(conversationId)
-        if (data) {
-            chat.hydrate(data)
+        const { localMessages, serverData } = await conversations.selectConversationLocalFirst(conversationId)
+        
+        // 优先用本地快照（含富 UI blocks），没有再降级到服务端纯文本
+        if (localMessages && localMessages.length > 0) {
+            chat.hydrateFromLocal(localMessages)
+            // 如果服务端消息更多，说明本地快照可能过期，用服务端数据替换
+            if (serverData && (serverData.messages?.length || 0) > localMessages.length) {
+                chat.hydrate(serverData)
+            }
+        } else if (serverData) {
+            chat.hydrate(serverData)
         }
     }, [chat, conversations])
 
@@ -64,8 +111,15 @@ export default function App() {
         const newSelectedId = await conversations.deleteConversation(conversationId)
         if (conversationId === conversations.selectedId) {
             if (newSelectedId) {
-                const data = await conversations.selectConversation(newSelectedId)
-                if (data) chat.hydrate(data)
+                const { localMessages, serverData } = await conversations.selectConversationLocalFirst(newSelectedId)
+                if (localMessages && localMessages.length > 0) {
+                    chat.hydrateFromLocal(localMessages)
+                    if (serverData && (serverData.messages?.length || 0) > localMessages.length) {
+                        chat.hydrate(serverData)
+                    }
+                } else if (serverData) {
+                    chat.hydrate(serverData)
+                }
             } else {
                 chat.clearToDraft()
                 conversations.startNewDraft()
@@ -75,6 +129,9 @@ export default function App() {
 
     // ─── 发送消息 ──────────────────────────────────────
     const handleSend = useCallback(async (rawText: string, structured: StructuredRequest) => {
+        // 只读模式下禁止发送
+        if (conversations.isReadOnly) return
+
         inputHistory.addToHistory(rawText)
 
         const sessionContext: { sessionId: string; conversationId?: string; createConversation?: boolean } = {
@@ -91,6 +148,16 @@ export default function App() {
         } else if (conversations.selectedId) {
             sessionContext.conversationId = conversations.selectedId
             conversations.touchConversation(conversations.selectedId)
+        }
+
+        // 发送完成后异步保存本地索引（标题 + 活跃时间）
+        const convId = sessionContext.conversationId
+        const convTitle = conversations.isDraft ? (rawText.slice(0, 30) || '新对话') : ''
+        if (convId) {
+            // 延迟保存：等消息列表更新后再投影
+            setTimeout(() => {
+                conversations.saveLocalIndex(convId, convTitle, chat.messages)
+            }, 2000)
         }
 
         chat.sendMessage(rawText, structured, mode, clientIP, uploadedFiles, sessionContext)
@@ -163,6 +230,19 @@ export default function App() {
 
             {/* 右侧主区域 */}
             <div className="flex flex-1 flex-col overflow-hidden">
+                {/* 只读降级提示条 */}
+                {conversations.isReadOnly && (
+                    <div className="readonly-banner">
+                        <span className="readonly-banner-icon">⚠</span>
+                        <span>离线模式 · 显示的是本地缓存快照，服务端不可用。发送消息已禁用。</span>
+                        <button
+                            className="readonly-banner-retry"
+                            onClick={() => window.location.reload()}
+                        >
+                            重试连接
+                        </button>
+                    </div>
+                )}
                 <Header
                     mode={mode}
                     onSetMode={setMode}
@@ -191,6 +271,7 @@ export default function App() {
                     steerQueueId={chat.steerQueueId}
                     steerError={chat.steerError}
                     onSteer={chat.sendSteer}
+                    disabled={conversations.isReadOnly}
                 />
             </div>
         </div>

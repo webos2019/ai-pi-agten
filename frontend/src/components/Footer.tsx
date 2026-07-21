@@ -16,6 +16,7 @@ interface Props {
     steerQueueId: string | null
     steerError: string | null
     onSteer: (text: string) => void
+    disabled?: boolean
 }
 
 function formatSize(bytes: number): string {
@@ -24,19 +25,20 @@ function formatSize(bytes: number): string {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
 }
 
-const Footer: React.FC<Props> = ({ isStreaming, isRetrying, slashCommands, atReferences, onSend, onFileDrop, onFileSelect, onFileRemove, uploadedFiles, onCancel, steerQueueId, steerError, onSteer }) => {
+const Footer: React.FC<Props> = ({ isStreaming, isRetrying, slashCommands, atReferences, onSend, onFileDrop, onFileSelect, onFileRemove, uploadedFiles, onCancel, steerQueueId, steerError, onSteer, disabled }) => {
     const editorRef = useRef<AIInputEditorRef>(null)
     const fileInputRef = useRef<HTMLInputElement>(null)
     const [steerText, setSteerText] = useState('')
 
     const handleSend = useCallback(() => {
+        if (disabled) return
         if (editorRef.current) {
             const text = editorRef.current.getText()
             if (text.trim()) {
                 onSend(text, editorRef.current.getStructuredRequest())
             }
         }
-    }, [onSend])
+    }, [onSend, disabled])
 
     const handleSteer = useCallback(() => {
         const text = steerText.trim()
@@ -140,14 +142,16 @@ const Footer: React.FC<Props> = ({ isStreaming, isRetrying, slashCommands, atRef
                     )}
                 </div>
                 {/* Rich Text Editor */}
-                <AIInputEditor
-                    ref={editorRef}
-                    placeholder="输入问题，/ 调出命令菜单，@ 引用版本方案或工具 (Ctrl+Enter 发送)"
-                    slashCommands={slashCommands}
-                    atReferences={atReferences}
-                    onSend={onSend}
-                    onFileDrop={onFileDrop}
-                />
+                <div className={disabled ? 'pointer-events-none opacity-50' : ''}>
+                    <AIInputEditor
+                        ref={editorRef}
+                        placeholder={disabled ? '离线模式 · 发送已禁用' : '输入问题，/ 调出命令菜单，@ 引用版本方案或工具 (Ctrl+Enter 发送)'}
+                        slashCommands={slashCommands}
+                        atReferences={atReferences}
+                        onSend={onSend}
+                        onFileDrop={onFileDrop}
+                    />
+                </div>
                 <p className="input-hint mt-1.5 text-center text-[11px] text-[var(--text-muted)]">支持 / 斜杠命令、@ 引用版本方案或工具、Ctrl+Enter 发送</p>
             </div>
         </div>

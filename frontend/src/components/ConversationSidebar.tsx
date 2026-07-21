@@ -28,6 +28,7 @@ const ConversationSidebar: React.FC<Props> = ({
 }) => {
     const [editingId, setEditingId] = useState('')
     const [editText, setEditText] = useState('')
+    const [confirmDeleteId, setConfirmDeleteId] = useState('')
 
     const handleStartEdit = (e: React.MouseEvent, conv: ConversationItem) => {
         e.stopPropagation()
@@ -156,7 +157,7 @@ const ConversationSidebar: React.FC<Props> = ({
                                                     </button>
                                                     <button
                                                         className="flex h-5 w-5 items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--red-err)]"
-                                                        onClick={(e) => { e.stopPropagation(); onDelete(conv.conversationId) }}
+                                                        onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(conv.conversationId) }}
                                                         title="删除"
                                                     >
                                                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="11" height="11">
@@ -181,6 +182,35 @@ const ConversationSidebar: React.FC<Props> = ({
             <div className="border-t border-[var(--cyan-border)] px-3 py-2 text-[10px] text-[var(--text-muted)]">
                 最多保留 10 个会话
             </div>
+
+            {/* 删除确认弹窗 */}
+            {confirmDeleteId && (
+                <div className="delete-confirm-overlay" onClick={() => setConfirmDeleteId('')}>
+                    <div className="delete-confirm-dialog" onClick={(e) => e.stopPropagation()}>
+                        <div className="delete-confirm-title">确认删除会话？</div>
+                        <div className="delete-confirm-desc">
+                            删除后无法恢复，该会话的所有消息将被永久清除。
+                        </div>
+                        <div className="delete-confirm-actions">
+                            <button
+                                className="delete-confirm-btn delete-confirm-cancel"
+                                onClick={() => setConfirmDeleteId('')}
+                            >
+                                取消
+                            </button>
+                            <button
+                                className="delete-confirm-btn delete-confirm-ok"
+                                onClick={() => {
+                                    onDelete(confirmDeleteId)
+                                    setConfirmDeleteId('')
+                                }}
+                            >
+                                确认删除
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </aside>
     )
 }

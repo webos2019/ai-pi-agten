@@ -33,9 +33,9 @@ from stream import (
     create_resource_end_chunk,
     create_agent_step_start_chunk,
     create_agent_step_end_chunk,
-    create_steer_applied_chunk,
 )
-from steer_queue import SteerQueue, SteerEntry
+from steer_queue import SteerQueue
+from steer_controller import SteerController, steer_aware_step
 from deepseek import chat_completion
 
 
@@ -116,8 +116,8 @@ class AgentState:
     final_answer: str = ""
     step_index: int = 0
 
-    # steer 历史 — 用户中途插话的转向指令文本列表
-    steer_history: list[str] = field(default_factory=list)
+    # steer 控制器 — 统一管理 steer 应用逻辑 (替代旧的 steer_history 手动列表)
+    steer_controller: SteerController | None = None
 
 
 # ─── 确定性质量门: validate_tasklist_structure ─────────
@@ -285,233 +285,200 @@ async def run_tasklist_agent(
     draft v1 -> validate -> warning 分流 ->
     (revise v2 -> validate) -> 修正效果评估 -> final_answer
 
-    steer 集成: 每个步骤边界检查 steer_queue，消费排队的转向指令，
-    注入到后续步骤的模型 prompt (state.steer_history)。
+    steer 集成: 通过 SteerController 统一管理，每个步骤用 steer_aware_step
+    上下文管理器自动检查 steer 队列，无需手动调用 _check_steer()。
     """
+    # 创建统一的 SteerController — 所有 steer 逻辑集中在此
+    ctrl = SteerController(steer_queue, lifecycle)
+    state.steer_controller = ctrl
+
     step = 0
 
     # ── Step 1: read_resource ──
-    _emit_step_start(lifecycle, state.run_id, step, "read_resource", "读取版本方案")
-    t0 = time.time()
+    async with steer_aware_step(ctrl, step, "read_resource"):
+        _emit_step_start(lifecycle, state.run_id, step, "read_resource", "读取版本方案")
+        t0 = time.time()
 
-    filename, filepath = resolve_version_plan_uri(state.version_plan_uri)
-    if not filepath:
-        _emit_step_end(lifecycle, state.run_id, step, "error",
-                        f"版本方案 {state.version_plan_uri} 不存在")
-        lifecycle.write_chunk(create_text_chunk(
-            f"❌ 版本方案 `{state.version_plan_uri}` 不存在。\n\n"
-            f"可用的版本方案:\n" +
-            "\n".join(f"  - `{p['uri']}`" for p in list_available_version_plans())
+        filename, filepath = resolve_version_plan_uri(state.version_plan_uri)
+        if not filepath:
+            _emit_step_end(lifecycle, state.run_id, step, "error",
+                            f"版本方案 {state.version_plan_uri} 不存在")
+            lifecycle.write_chunk(create_text_chunk(
+                f"❌ 版本方案 `{state.version_plan_uri}` 不存在。\n\n"
+                f"可用的版本方案:\n" +
+                "\n".join(f"  - `{p['uri']}`" for p in list_available_version_plans())
+            ))
+            return
+
+        with open(filepath, "r", encoding="utf-8") as f:
+            state.version_plan_content = f.read()
+        state.version_plan_filename = filename
+
+        lifecycle.write_chunk(create_resource_start_chunk(filename, state.version_plan_uri))
+        preview = state.version_plan_content[:500]
+        is_truncated = len(state.version_plan_content) > 500
+        lifecycle.write_chunk(create_resource_end_chunk(
+            filename, state.version_plan_uri,
+            content_preview=preview,
+            is_truncated=is_truncated,
+            preview_chars=500 if is_truncated else None,
         ))
-        return
 
-    with open(filepath, "r", encoding="utf-8") as f:
-        state.version_plan_content = f.read()
-    state.version_plan_filename = filename
-
-    lifecycle.write_chunk(create_resource_start_chunk(filename, state.version_plan_uri))
-    preview = state.version_plan_content[:500]
-    is_truncated = len(state.version_plan_content) > 500
-    lifecycle.write_chunk(create_resource_end_chunk(
-        filename, state.version_plan_uri,
-        content_preview=preview,
-        is_truncated=is_truncated,
-        preview_chars=500 if is_truncated else None,
-    ))
-
-    _emit_step_end(lifecycle, state.run_id, step, "success",
-                    f"已读取 {filename} ({len(state.version_plan_content)} 字符)",
-                    duration_ms=int((time.time() - t0) * 1000))
+        _emit_step_end(lifecycle, state.run_id, step, "success",
+                        f"已读取 {filename} ({len(state.version_plan_content)} 字符)",
+                        duration_ms=int((time.time() - t0) * 1000))
     step += 1
-    await _check_steer(lifecycle, state, steer_queue, step, "plan_extract")
 
     # ── Step 2: plan_extract ──
-    _emit_step_start(lifecycle, state.run_id, step, "plan_extract", "提取版本方案结构")
-    t0 = time.time()
+    async with steer_aware_step(ctrl, step, "plan_extract"):
+        _emit_step_start(lifecycle, state.run_id, step, "plan_extract", "提取版本方案结构")
+        t0 = time.time()
 
-    state.plan_extract = extract_plan_structure(state.version_plan_content)
-    plan_text = format_plan_extract_for_prompt(state.plan_extract)
+        state.plan_extract = extract_plan_structure(state.version_plan_content)
+        plan_text = format_plan_extract_for_prompt(state.plan_extract)
 
-    field_count = sum(len(v) if isinstance(v, list) else (1 if v else 0) for v in state.plan_extract.values())
-    _emit_step_end(lifecycle, state.run_id, step, "success",
-                    f"提取到 {field_count} 个结构字段",
-                    duration_ms=int((time.time() - t0) * 1000))
+        field_count = sum(len(v) if isinstance(v, list) else (1 if v else 0) for v in state.plan_extract.values())
+        _emit_step_end(lifecycle, state.run_id, step, "success",
+                        f"提取到 {field_count} 个结构字段",
+                        duration_ms=int((time.time() - t0) * 1000))
     step += 1
-    await _check_steer(lifecycle, state, steer_queue, step, "plan_readiness")
 
     # ── Step 2.5: 方案就绪度评估 ──
-    _emit_step_start(lifecycle, state.run_id, step, "plan_readiness", "方案就绪度评估")
-    t0 = time.time()
+    async with steer_aware_step(ctrl, step, "plan_readiness"):
+        _emit_step_start(lifecycle, state.run_id, step, "plan_readiness", "方案就绪度评估")
+        t0 = time.time()
 
-    plan = state.plan_extract
-    has_goals = bool(plan.get("goals"))
-    has_key_changes = bool(plan.get("key_changes"))
+        plan = state.plan_extract
+        has_goals = bool(plan.get("goals"))
+        has_key_changes = bool(plan.get("key_changes"))
 
-    if not has_goals and not has_key_changes:
-        _emit_step_end(lifecycle, state.run_id, step, "error",
-                        "方案就绪度不足：未提取到目标和关键变更",
+        if not has_goals and not has_key_changes:
+            _emit_step_end(lifecycle, state.run_id, step, "error",
+                            "方案就绪度不足：未提取到目标和关键变更",
+                            duration_ms=int((time.time() - t0) * 1000))
+            lifecycle.write_chunk(create_text_chunk(
+                "⚠️ 版本方案信息不足，未提取到「目标」和「关键变更」章节。\n\n"
+                "请确保方案包含以下章节：\n"
+                "- `## 目标` 或 `## 版本目标`\n"
+                "- `## 关键变更` 或 `## 关键改动`\n\n"
+                f"提取结果: version={plan.get('version', '无')}, "
+                f"goals={len(plan.get('goals', []))} 项, "
+                f"key_changes={len(plan.get('key_changes', []))} 项\n\n"
+                "无法基于不完整的方案生成高质量草稿，请补充方案内容后重试。"
+            ))
+            return
+
+        readiness_summary = (
+            f"就绪度通过: goals={len(plan.get('goals', []))} 项, "
+            f"key_changes={len(plan.get('key_changes', []))} 项"
+        )
+        _emit_step_end(lifecycle, state.run_id, step, "success",
+                        readiness_summary,
                         duration_ms=int((time.time() - t0) * 1000))
-        lifecycle.write_chunk(create_text_chunk(
-            "⚠️ 版本方案信息不足，未提取到「目标」和「关键变更」章节。\n\n"
-            "请确保方案包含以下章节：\n"
-            "- `## 目标` 或 `## 版本目标`\n"
-            "- `## 关键变更` 或 `## 关键改动`\n\n"
-            f"提取结果: version={plan.get('version', '无')}, "
-            f"goals={len(plan.get('goals', []))} 项, "
-            f"key_changes={len(plan.get('key_changes', []))} 项\n\n"
-            "无法基于不完整的方案生成高质量草稿，请补充方案内容后重试。"
-        ))
-        return
-
-    readiness_summary = (
-        f"就绪度通过: goals={len(plan.get('goals', []))} 项, "
-        f"key_changes={len(plan.get('key_changes', []))} 项"
-    )
-    _emit_step_end(lifecycle, state.run_id, step, "success",
-                    readiness_summary,
-                    duration_ms=int((time.time() - t0) * 1000))
     step += 1
-    await _check_steer(lifecycle, state, steer_queue, step, "draft_tasklist")
 
     # ── Step 3: draft_tasklist v1 ──
-    _emit_step_start(lifecycle, state.run_id, step, "draft_tasklist", "生成任务清单草稿 v1")
-    t0 = time.time()
+    async with steer_aware_step(ctrl, step, "draft_tasklist"):
+        _emit_step_start(lifecycle, state.run_id, step, "draft_tasklist", "生成任务清单草稿 v1")
+        t0 = time.time()
 
-    state.tasklist_draft_v1 = await _generate_tasklist_draft(state, plan_text, is_revision=False)
-    state.current_draft = state.tasklist_draft_v1
+        state.tasklist_draft_v1 = await _generate_tasklist_draft(state, plan_text, is_revision=False)
+        state.current_draft = state.tasklist_draft_v1
 
-    lifecycle.write_chunk(create_text_chunk("## 任务清单草稿 v1\n\n"))
-    lifecycle.write_chunk(create_text_chunk(state.tasklist_draft_v1 + "\n\n"))
+        lifecycle.write_chunk(create_text_chunk("## 任务清单草稿 v1\n\n"))
+        lifecycle.write_chunk(create_text_chunk(state.tasklist_draft_v1 + "\n\n"))
 
-    _emit_step_end(lifecycle, state.run_id, step, "success",
-                    "草稿 v1 已生成",
-                    duration_ms=int((time.time() - t0) * 1000))
+        _emit_step_end(lifecycle, state.run_id, step, "success",
+                        "草稿 v1 已生成",
+                        duration_ms=int((time.time() - t0) * 1000))
     step += 1
-    await _check_steer(lifecycle, state, steer_queue, step, "validate_tasklist")
 
     # ── Step 4: validate_tasklist v1（含 Warning 分流）──
-    _emit_step_start(lifecycle, state.run_id, step, "validate_tasklist", "结构校验 v1（Warning 分流）")
-    t0 = time.time()
+    async with steer_aware_step(ctrl, step, "validate_tasklist"):
+        _emit_step_start(lifecycle, state.run_id, step, "validate_tasklist", "结构校验 v1（Warning 分流）")
+        t0 = time.time()
 
-    state.validation_v1 = validate_tasklist_structure(state.tasklist_draft_v1, state)
+        state.validation_v1 = validate_tasklist_structure(state.tasklist_draft_v1, state)
 
-    v1_summary = state.validation_v1.summary
-    if state.validation_v1.warning_count > 0 and not state.validation_v1.should_revise:
-        v1_summary += f"（{state.validation_v1.warning_count} 个 warning 已忽略，不触发修正）"
+        v1_summary = state.validation_v1.summary
+        if state.validation_v1.warning_count > 0 and not state.validation_v1.should_revise:
+            v1_summary += f"（{state.validation_v1.warning_count} 个 warning 已忽略，不触发修正）"
 
-    _emit_step_end(lifecycle, state.run_id, step,
-                    "success" if state.validation_v1.is_valid else ("error" if state.validation_v1.should_revise else "success"),
-                    v1_summary,
-                    duration_ms=int((time.time() - t0) * 1000))
+        _emit_step_end(lifecycle, state.run_id, step,
+                        "success" if state.validation_v1.is_valid else ("error" if state.validation_v1.should_revise else "success"),
+                        v1_summary,
+                        duration_ms=int((time.time() - t0) * 1000))
     step += 1
-    await _check_steer(lifecycle, state, steer_queue, step, "revise_tasklist")
 
     # ── Step 5: revise_tasklist（仅阻断性问题才修正，warning 跳过）──
     if state.validation_v1.should_revise and state.revision_count < 1:
-        _emit_step_start(lifecycle, state.run_id, step, "revise_tasklist", "自动修正草稿")
-        t0 = time.time()
+        async with steer_aware_step(ctrl, step, "revise_tasklist"):
+            _emit_step_start(lifecycle, state.run_id, step, "revise_tasklist", "自动修正草稿")
+            t0 = time.time()
 
-        state.revision_count = 1
-        blocking_issues = [i for i in state.validation_v1.issues if i.severity == "blocking"]
-        issues_text = "；".join(i.message for i in blocking_issues)
-        state.tasklist_draft_v2 = await _generate_tasklist_draft(state, plan_text, is_revision=True, issues=issues_text)
-        state.current_draft = state.tasklist_draft_v2
+            state.revision_count = 1
+            blocking_issues = [i for i in state.validation_v1.issues if i.severity == "blocking"]
+            issues_text = "；".join(i.message for i in blocking_issues)
+            state.tasklist_draft_v2 = await _generate_tasklist_draft(state, plan_text, is_revision=True, issues=issues_text)
+            state.current_draft = state.tasklist_draft_v2
 
-        lifecycle.write_chunk(create_text_chunk("## 任务清单草稿 v2（修正后）\n\n"))
-        lifecycle.write_chunk(create_text_chunk(state.tasklist_draft_v2 + "\n\n"))
+            lifecycle.write_chunk(create_text_chunk("## 任务清单草稿 v2（修正后）\n\n"))
+            lifecycle.write_chunk(create_text_chunk(state.tasklist_draft_v2 + "\n\n"))
 
-        _emit_step_end(lifecycle, state.run_id, step, "success",
-                        "修正版 v2 已生成",
-                        duration_ms=int((time.time() - t0) * 1000))
+            _emit_step_end(lifecycle, state.run_id, step, "success",
+                            "修正版 v2 已生成",
+                            duration_ms=int((time.time() - t0) * 1000))
         step += 1
-        await _check_steer(lifecycle, state, steer_queue, step, "validate_tasklist_v2")
 
         # ── Step 6: validate_tasklist v2 ──
-        _emit_step_start(lifecycle, state.run_id, step, "validate_tasklist", "结构校验 v2")
-        t0 = time.time()
+        async with steer_aware_step(ctrl, step, "validate_tasklist_v2"):
+            _emit_step_start(lifecycle, state.run_id, step, "validate_tasklist", "结构校验 v2")
+            t0 = time.time()
 
-        state.validation_v2 = validate_tasklist_structure(state.tasklist_draft_v2, state)
+            state.validation_v2 = validate_tasklist_structure(state.tasklist_draft_v2, state)
 
-        _emit_step_end(lifecycle, state.run_id, step,
-                        "success" if state.validation_v2.is_valid else "error",
-                        state.validation_v2.summary,
-                        duration_ms=int((time.time() - t0) * 1000))
+            _emit_step_end(lifecycle, state.run_id, step,
+                            "success" if state.validation_v2.is_valid else "error",
+                            state.validation_v2.summary,
+                            duration_ms=int((time.time() - t0) * 1000))
         step += 1
-        await _check_steer(lifecycle, state, steer_queue, step, "revision_eval")
 
         # ── Step 6.5: 修正效果评估 ──
-        _emit_step_start(lifecycle, state.run_id, step, "revision_eval", "修正效果评估")
-        t0 = time.time()
+        async with steer_aware_step(ctrl, step, "revision_eval"):
+            _emit_step_start(lifecycle, state.run_id, step, "revision_eval", "修正效果评估")
+            t0 = time.time()
 
-        best_draft, best_validation, effect_note = _select_best_draft(state)
-        state.current_draft = best_draft
-        state.revision_effect = effect_note
+            best_draft, best_validation, effect_note = _select_best_draft(state)
+            state.current_draft = best_draft
+            state.revision_effect = effect_note
 
-        if "有效" in effect_note or "通过" in effect_note:
-            eval_status = "success"
-        elif "无改善" in effect_note:
-            eval_status = "success"  # 没变好但也没变差
-        else:
-            eval_status = "error"  # 越修越差，回退
+            if "有效" in effect_note or "通过" in effect_note:
+                eval_status = "success"
+            elif "无改善" in effect_note:
+                eval_status = "success"  # 没变好但也没变差
+            else:
+                eval_status = "error"  # 越修越差，回退
 
-        _emit_step_end(lifecycle, state.run_id, step, eval_status,
-                        effect_note,
-                        duration_ms=int((time.time() - t0) * 1000))
+            _emit_step_end(lifecycle, state.run_id, step, eval_status,
+                            effect_note,
+                            duration_ms=int((time.time() - t0) * 1000))
         step += 1
 
     # ── Step 7: final_answer ──
-    await _check_steer(lifecycle, state, steer_queue, step, "final_answer")
-    _emit_step_start(lifecycle, state.run_id, step, "final_answer", "生成最终输出")
-    t0 = time.time()
+    async with steer_aware_step(ctrl, step, "final_answer"):
+        _emit_step_start(lifecycle, state.run_id, step, "final_answer", "生成最终输出")
+        t0 = time.time()
 
-    final = _build_final_answer(state)
-    state.final_answer = final
-    lifecycle.write_chunk(create_text_chunk(final))
+        final = _build_final_answer(state)
+        state.final_answer = final
+        lifecycle.write_chunk(create_text_chunk(final))
 
-    _emit_step_end(lifecycle, state.run_id, step, "success",
-                    "最终输出已生成",
-                    duration_ms=int((time.time() - t0) * 1000))
+        _emit_step_end(lifecycle, state.run_id, step, "success",
+                        "最终输出已生成",
+                        duration_ms=int((time.time() - t0) * 1000))
 
 
 # ─── 内部辅助 ─────────────────────────────────────────
-
-async def _check_steer(
-    lifecycle: StreamLifecycle,
-    state: AgentState,
-    steer_queue: SteerQueue | None,
-    step_index: int,
-    action_type: str,
-) -> list[SteerEntry]:
-    """在步骤边界检查 steer 队列，消费并应用所有排队的转向指令。
-
-    对每条 steer:
-    1. 标记为已应用 (steer_queue.mark_applied)
-    2. 发送 steer_applied chunk 通知前端
-    3. 追加到 state.steer_history，供后续模型调用注入 prompt
-    4. 发送一条可见文本提示用户 steer 已接收
-    """
-    if not steer_queue:
-        return []
-
-    steers = await steer_queue.drain()
-    if not steers:
-        return []
-
-    for s in steers:
-        steer_queue.mark_applied(s, step_index, action_type)
-        lifecycle.write_chunk(create_steer_applied_chunk(
-            steer_id=s.id,
-            steer_text=s.text,
-            applied_at_step=step_index,
-            action_type=action_type,
-        ))
-        state.steer_history.append(s.text)
-        lifecycle.write_chunk(create_text_chunk(
-            f"\n> 🔄 **已接收转向指令**: {s.text}\n\n"
-        ))
-
-    return steers
-
 
 def _emit_step_start(
     lifecycle: StreamLifecycle, run_id: str, step_index: int,
@@ -547,8 +514,8 @@ async def _generate_tasklist_draft(
 ) -> str:
     """调用模型生成 tasklist 草稿
 
-    steer 集成: 如果 state.steer_history 非空，把用户中途插话的转向指令
-    注入到 user prompt，引导模型据此调整草稿内容。
+    steer 集成: 通过 state.steer_controller.format_for_prompt() 统一注入，
+    无需手动拼接 steer_history 到 prompt。
     """
     system_prompt = (
         "你是一个任务清单生成助手。根据版本方案的结构化依据，生成一份可执行的任务清单（tasklist）草稿。\n\n"
@@ -570,13 +537,9 @@ async def _generate_tasklist_draft(
             "请确保修正后的草稿通过结构校验。"
         )
 
-    # ── steer 注入: 把用户中途插话的转向指令注入 prompt ──
-    if state.steer_history:
-        steer_lines = "\n".join(f"  - {s}" for s in state.steer_history)
-        user_content += (
-            f"\n\n⚠️ 用户中途插话的转向指令（请据此调整草稿内容和侧重点）:\n{steer_lines}\n"
-            "请在草稿中体现这些调整方向，不必在输出中重复指令本身。"
-        )
+    # ── steer 注入: 统一通过 SteerController.format_for_prompt() ──
+    if state.steer_controller:
+        user_content += state.steer_controller.format_for_prompt()
 
     messages = [
         {"role": "system", "content": system_prompt},

@@ -143,6 +143,12 @@ class AgentLoopConfig:
     # 工具执行超时（秒）
     tool_timeout: float = 30.0
 
+    # 截断容错最大重试次数 (连续截断超过此次数后终止循环，防止无限重试)
+    max_truncation_retries: int = 3
+
+    # 最大轮次 (双层循环总轮次上限，防止无限循环)
+    max_turns: int = 20
+
 
 # ─── 事件类型 ──────────────────────────────────────────
 
@@ -221,10 +227,12 @@ async def run_loop(
     双层循环:
       外层 (while True): follow-up 驱动
         内层 (while has_more_tool_calls or pending_steers): tool call 驱动
+          0. 轮次计数 (超过 max_turns 强制终止)
           1. 注入 steering 消息
-          2. stream_assistant_response() — 调 LLM
-          3. 检查 stop_reason
+          2. stream_assistant_response() — 调 LLM (异常捕获 → stop_reason=error)
+          3. 检查 stop_reason (error/aborted → 立即终止)
           4. 提取 tool_calls → execute_tool_calls()
+             截断 (stop_reason=length) → 截断计数 (超过 max_truncation_retries 终止)
           5. prepare_next_turn() — 切模型/thinking
           6. should_stop_after_turn() — 检查是否该停
           7. 获取新的 steering 消息
@@ -233,6 +241,8 @@ async def run_loop(
     current_context = initial_context
     current_config = config
     first_turn = True
+    truncation_count = 0  # 连续截断计数器
+    turn_count = 0        # 总轮次计数器
 
     # 启动时检查 steering 消息
     pending_messages: list[AgentMessage] = []
@@ -247,6 +257,12 @@ async def run_loop(
 
         # 内层循环: tool call 驱动
         while has_more_tool_calls or pending_messages:
+            turn_count += 1
+            if turn_count > config.max_turns:
+                # 超过最大轮次，强制终止
+                await emit(AgentEvent(type="agent_end", messages=new_messages))
+                return
+
             if not first_turn:
                 await emit(AgentEvent(type="turn_start"))
             else:
@@ -281,17 +297,23 @@ async def run_loop(
             if tool_calls:
                 # 检查是否被截断
                 if message.stop_reason == "length":
-                    # 截断容错: 将不完整的 tool_calls 标记为错误
-                    executed = await fail_tool_calls_from_truncated_message(
-                        tool_calls, emit,
-                    )
-                    tool_results.extend(executed.results)
-                    for tr_msg in executed.messages:
-                        current_context.messages.append(tr_msg)
-                        new_messages.append(tr_msg)
-                    has_more_tool_calls = not executed.terminate
+                    truncation_count += 1
+                    if truncation_count > config.max_truncation_retries:
+                        # 超过截断重试上限，终止循环
+                        has_more_tool_calls = False
+                    else:
+                        # 截断容错: 将不完整的 tool_calls 标记为错误
+                        executed = await fail_tool_calls_from_truncated_message(
+                            tool_calls, emit,
+                        )
+                        tool_results.extend(executed.results)
+                        for tr_msg in executed.messages:
+                            current_context.messages.append(tr_msg)
+                            new_messages.append(tr_msg)
+                        has_more_tool_calls = not executed.terminate
                 else:
                     # 正常执行工具
+                    truncation_count = 0  # 重置截断计数器
                     executed = await execute_tool_calls(
                         current_context, message, current_config, signal, emit,
                     )
@@ -376,7 +398,7 @@ async def stream_assistant_response(
         thinking_level=context.thinking_level,
     )
 
-    # 3. 调用 stream_fn
+    # 3. 调用 stream_fn (信号检查 + 异常捕获)
     if signal and signal.is_set():
         return AgentMessage(
             role="assistant",
@@ -384,7 +406,15 @@ async def stream_assistant_response(
             stop_reason="aborted",
         )
 
-    message = await config.stream_fn(llm_context, config)
+    try:
+        message = await config.stream_fn(llm_context, config)
+    except Exception as e:
+        # LLM API 异常 — 返回 error 而非让循环崩溃
+        message = AgentMessage(
+            role="assistant",
+            content=f"Error: LLM stream failed: {e}",
+            stop_reason="error",
+        )
 
     # 4. 发射事件
     await emit(AgentEvent(type="message_start", message=message))

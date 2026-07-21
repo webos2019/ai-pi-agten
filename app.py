@@ -223,7 +223,11 @@ async def get_conversation(conversation_id: str, session_id: str = ""):
         return JSONResponse({"error": "会话不存在"}, status_code=404)
     state = thread_store.get(conv.thread_id)
     if not state:
-        return {"conversationId": conversation_id, "messages": [], "summary": "", "pinnedDecisions": [], "restored": False}
+        # 503: 服务端 ThreadState 不可用 → 前端进入只读降级模式
+        return JSONResponse(
+            {"error": "ThreadState 不可用", "conversationId": conversation_id},
+            status_code=503,
+        )
     dto = state.to_hydration_dto()
     dto["conversationId"] = conversation_id
     dto["title"] = conv.title

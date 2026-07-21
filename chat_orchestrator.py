@@ -46,6 +46,7 @@ from agent_loop import (
     ToolCallResult,
     AgentEvent,
 )
+from steer_controller import SteerController
 from deepseek import chat_completion
 
 MAX_TOOL_CALLS = 5
@@ -268,7 +269,13 @@ async def _do_orchestrate(
     agent_messages = _convert_to_agent_messages(current_messages)
 
     # 2. 构建工具定义 (桥接 tool_registry → ToolDefinition)
-    tool_defs = _build_tool_definitions(tool_names, context)
+    # 注入 lifecycle 到 context，供子代理工具发射流式事件
+    context_with_lifecycle = {
+        **context,
+        "_lifecycle": lifecycle,
+        "_run_id": create_id(),
+    }
+    tool_defs = _build_tool_definitions(tool_names, context_with_lifecycle)
 
     # 3. 构建 AgentContext
     agent_context = AgentContext(
@@ -280,6 +287,13 @@ async def _do_orchestrate(
 
     # 4. 构建配置 — 所有策略通过钩子注入
     tool_call_tracker = {"count": 0}
+
+    # 创建统一的 SteerController — 普通聊天也支持流式插话
+    steer_queue = context.get("steer_queue")
+    steer_ctrl = SteerController(steer_queue, lifecycle)
+
+    # turn 计数器 (供 steer check_and_apply 使用)
+    turn_counter = {"count": 0}
 
     async def stream_fn(ctx: AgentContext, cfg: AgentLoopConfig) -> AgentMessage:
         return await _default_stream_fn(ctx, cfg)
@@ -294,10 +308,28 @@ async def _do_orchestrate(
             result_policy, lifecycle, tool_call_tracker,
         )
 
+    # get_steering_messages 钩子 — 接上 SteerController
+    # agent_loop 在循环边界调用此钩子，自动消费 steer 队列
+    async def get_steering_messages() -> list[AgentMessage]:
+        turn_counter["count"] += 1
+        steers = await steer_ctrl.check_and_apply(
+            turn_counter["count"], "chat_turn",
+        )
+        if not steers:
+            return []
+        # 将 steer 文本转为 AgentMessage 注入到上下文
+        return [
+            AgentMessage(role="user", content=s.text)
+            for s in steers
+        ]
+
+    # 如果工具列表中包含子代理工具，增大 tool_timeout
+    has_sub_agent = any(t.name == "delegate_sub_agent" for t in tool_defs)
     config = AgentLoopConfig(
         stream_fn=stream_fn,
         should_stop_after_turn=should_stop,
-        tool_timeout=30.0,
+        get_steering_messages=get_steering_messages,
+        tool_timeout=120.0 if has_sub_agent else 30.0,
     )
 
     # 5. 构建 emit 回调 — 实时把 AgentEvent 转为 NDJSON chunk

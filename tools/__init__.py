@@ -9,6 +9,7 @@ from .get_weather import register as register_get_weather
 from .web_browse import register as register_web_browse
 from .local_text_read import register as register_local_text_read
 from .list_files import register as register_list_files
+from .sub_agent_tool import register as register_sub_agent
 
 from tool_registry import tool_registry
 from skill_registry import skill_registry
@@ -26,6 +27,7 @@ def register_all_tools():
     register_web_browse()
     register_local_text_read()
     register_list_files()
+    register_sub_agent()
 
     # ── 技能 ──（文件化懒加载，借鉴 Pi progressive disclosure）
     # 启动时只扫描 skills/ 目录建立 id→filepath 索引，不加载 system_prompt 内容；
