@@ -20,24 +20,69 @@ from memory_retrieval import (
     is_user_memory_context_eligible,
     MemoryRetrievalConfig,
 )
-from memory_extractor import extract_and_store_memories
+from memory_extractor import extract_and_store_memories_batch
+from knowledge_extractor import extract_and_store_knowledge
+from thread_state import MEMORY_EXTRACTION_BATCH_SIZE
+from knowledge_base import kb_store, get_kb_namespace
 
 
 def resolve_skill(explicit_skill: str | None, user_message: str) -> str:
-    """根据用户消息自动检测技能（无显式技能时）"""
+    """根据用户消息自动检测技能（无显式技能时）
+
+    路由优先级:
+    1. 显式技能 > 一切
+    2. OA 运维关键词 → oa-ops-skill
+    3. 股票关键词 → stock-skill
+    4. 搜索问答关键词（知识性问题）→ search-skill
+    5. 网络研究关键词 → web-skill
+    6. 文件读取关键词 → reader-skill
+    7. 默认 → utility-skill (已包含 web_search + web_fetch)
+    """
     if explicit_skill:
         return explicit_skill
 
-    utility_keywords = ["计算", "时间", "日期", "换算", "convert", "datetime",
-                        "calculator", "math", "unit", "天气", "weather", "city"]
-    reader_keywords = ["文件", "读取", "目录", "read", "file", "directory", "location"]
-
     lower_msg = user_message.lower()
-    utility_matches = sum(1 for k in utility_keywords if k in lower_msg)
-    reader_matches = sum(1 for k in reader_keywords if k in lower_msg)
 
-    if reader_matches > utility_matches or reader_matches > 0:
+    # OA 运维
+    ops_keywords = ["OA", "告警", "宕机", "打不开", "502", "500", "超时",
+                    "排查", "故障", "巡检", "变更", "发版", "回滚"]
+    if any(kw.lower() in lower_msg for kw in ops_keywords):
+        return "oa-ops-skill"
+
+    # 股票
+    stock_keywords = ["股票", "行情", "A股", "创业板", "ETF", "涨跌", "股价",
+                      "市值", "涨停", "跌停", "主力", "走势", "大盘", "科创板", "stock"]
+    if any(kw.lower() in lower_msg for kw in stock_keywords):
+        return "stock-skill"
+
+    # 搜索问答（知识性问题 → 专用搜索技能）
+    # 匹配模式: "什么是X" "介绍一下X" "X是什么" "X的作者" "X讲了什么" 等
+    # 包含语音场景常见表达: "帮我查查" "搜一下" "找找" 等
+    search_patterns = [
+        "什么是", "是什么", "介绍一下", "介绍下", "告诉我",
+        "详解", "百科", "概念", "原理", "历史", "人物",
+        "书籍", "作者", "内容简介", "讲了什么", "怎么样",
+        "解释一下", "解释下", "科普", "由来", "典故",
+        "是谁", "在哪", "什么时候", "为什么",
+        # 语音场景常见搜索表达
+        "帮我查", "查查", "查一下", "搜一下", "搜搜",
+        "找一下", "找找", "帮我搜", "帮我找",
+    ]
+    if any(kw in user_message for kw in search_patterns):
+        return "search-skill"
+
+    # 网络研究（显式搜索意图）
+    web_keywords = ["搜索", "网络", "网页", "GitHub", "YouTube", "视频",
+                    "PDF", "论文", "研究", "查找资料"]
+    if any(kw.lower() in lower_msg for kw in web_keywords):
+        return "web-skill"
+
+    # 文件读取
+    reader_keywords = ["文件", "读取", "目录", "read", "file", "directory", "location"]
+    if any(kw in lower_msg for kw in reader_keywords):
         return "reader-skill"
+
+    # 默认技能 (utility-skill 已包含 web_search + web_fetch，可处理知识性问题)
     return "utility-skill"
 
 
@@ -112,6 +157,7 @@ class ChatService:
             # 借鉴掘金文章 AI Mind v0.4.6:
             #   只有 ordinary_chat 才触发，/tasklist Agent 路径不触发
             #   语义召回失败不影响聊天（降级为 0 条记忆注入）
+            memory_context_messages: list[dict[str, str]] = []
             if session_id and is_user_memory_context_eligible(user_message, structured):
                 try:
                     memory_namespace = get_memory_namespace(session_id)
@@ -122,21 +168,54 @@ class ChatService:
                         user_message,
                         memory_config,
                     )
-                    memory_context = build_memory_context_messages(selected_memories)
-                    context_messages.extend(memory_context)
+                    memory_context_messages = build_memory_context_messages(selected_memories)
                 except Exception:
                     # 语义召回失败，降级为无记忆注入，聊天继续
                     pass
 
+            # 将记忆上下文插入到历史消息之后、当前用户消息之前
+            # P1 优化: 这样 [summary + pinned + 历史消息] 形成稳定前缀，
+            # 可被 DeepSeek Context Cache 命中，记忆上下文的变化不会打断缓存。
+            if memory_context_messages:
+                for mem_msg in memory_context_messages:
+                    context_messages.append(mem_msg)
+
+            # ── 知识库语义召回（文档片段注入）──
+            # 与 UserMemory 平行工作：UserMemory 召回用户偏好，KB 召回文档知识
+            kb_context_messages: list[dict[str, str]] = []
+            if session_id and is_user_memory_context_eligible(user_message, structured):
+                try:
+                    kb_namespace = get_kb_namespace(session_id)
+                    kb_results = await kb_store.search(kb_namespace, user_message, limit=3)
+                    if kb_results:
+                        kb_text_parts = []
+                        for r in kb_results:
+                            snippet = r.chunk.text[:500]
+                            kb_text_parts.append(
+                                f"[{r.doc_title} - 片段{r.chunk_index + 1}]\n{snippet}"
+                            )
+                        kb_text = "\n\n".join(kb_text_parts)
+                        kb_context_messages.append({
+                            "role": "system",
+                            "content": f"[知识库参考]\n{kb_text}",
+                        })
+                except Exception:
+                    # 知识库召回失败，降级为无注入
+                    pass
+
+            if kb_context_messages:
+                for kb_msg in kb_context_messages:
+                    context_messages.append(kb_msg)
+
             if current_user_msg:
                 context_messages.append(current_user_msg)
-            session = create_chat_session(resolved_skill, context_messages)
+            session = create_chat_session(resolved_skill, context_messages, session_id)
         else:
             # 无会话归属，回退到前端 messages (兼容)
-            session = create_chat_session(resolved_skill, messages)
+            session = create_chat_session(resolved_skill, messages, session_id)
 
         # 将结构化请求传入 context，供 Agent Runtime 检测
-        agent_context: dict[str, Any] = {"clientIP": client_ip_req}
+        agent_context: dict[str, Any] = {"clientIP": client_ip_req, "session_id": session_id}
         if structured:
             agent_context["structured"] = structured
 
@@ -176,10 +255,42 @@ class ChatService:
                     if reg:
                         reg.touch(write_conversation_id)
 
-            # ── 长期记忆提取（回合后，失败不影响聊天）──
-            # 借鉴掘金文章 AI Mind v0.4.6:
-            #   模型提取候选记忆 → 程序校验 → store.put(['text','tags'])
-            #   只有普通聊天才提取，/tasklist Agent 路径不提取
+            # ── 长期记忆提取（P2: 攒 N 轮批量提取，失败不影响聊天）──
+            # P2 优化: 不再每轮都调 LLM 提取，而是攒满 MEMORY_EXTRACTION_BATCH_SIZE 轮后
+            # 一次性批量提取，减少 66% 的 LLM 调用次数。
+            if (
+                write_session_id
+                and not collector.has_error()
+                and is_user_memory_context_eligible(user_message, structured)
+            ):
+                final_text = collector.get_collected_text()
+                if final_text.strip():
+                    # 攒入缓冲区
+                    write_thread_state.pending_extraction_pairs.append(
+                        (user_message, final_text)
+                    )
+                    write_thread_state.extraction_turn_count += 1
+
+                    # 攒满 N 轮才批量提取
+                    if write_thread_state.extraction_turn_count >= MEMORY_EXTRACTION_BATCH_SIZE:
+                        try:
+                            memory_namespace = get_memory_namespace(write_session_id)
+                            await extract_and_store_memories_batch(
+                                user_memory_store,
+                                memory_namespace,
+                                write_thread_state.pending_extraction_pairs,
+                                write_conversation_id,
+                            )
+                        except Exception:
+                            # 记忆提取失败，静默跳过，不影响聊天
+                            pass
+                        # 清空缓冲区
+                        write_thread_state.pending_extraction_pairs.clear()
+                        write_thread_state.extraction_turn_count = 0
+
+            # ── 知识库自动投喂（对话结束后提取知识写入 KB）──
+            # 与记忆提取平行工作：记忆提取用户偏好，知识提取提取事实性知识
+            # 失败不影响聊天（静默降级）
             if (
                 write_session_id
                 and not collector.has_error()
@@ -188,16 +299,13 @@ class ChatService:
                 final_text = collector.get_collected_text()
                 if final_text.strip():
                     try:
-                        memory_namespace = get_memory_namespace(write_session_id)
-                        await extract_and_store_memories(
-                            user_memory_store,
-                            memory_namespace,
+                        await extract_and_store_knowledge(
+                            write_session_id,
                             user_message,
                             final_text,
-                            write_conversation_id,
                         )
                     except Exception:
-                        # 记忆提取失败，静默跳过，不影响聊天
+                        # 知识提取失败，静默跳过，不影响聊天
                         pass
 
         try:

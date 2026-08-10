@@ -26,14 +26,11 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="datetime",
-        description="获取当前日期和时间",
+        description="获取当前日期、时间和星期",
         parameters={
             "type": "object",
             "properties": {
-                "format": {
-                    "type": "string",
-                    "description": "输出格式，如: YYYY-MM-DD HH:mm:ss",
-                }
+                "format": {"type": "string"},
             },
         },
         execute=execute,

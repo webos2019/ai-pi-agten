@@ -41,6 +41,7 @@ MAX_TAGS_PER_MEMORY = 5           # 每条记忆最多标签数
 MAX_CANDIDATES_PER_TURN = 5       # 每轮最多提取 5 条候选
 MIN_EXTRACT_CONFIDENCE = 0.6      # 提取最低置信度（低于此值丢弃）
 EXTRACTION_TIMEOUT_MS = 10000     # 提取超时（毫秒）
+MAX_ASSISTANT_TEXT_IN_BATCH = 800  # 批量提取时每轮助手回复截断字符数
 
 
 # ─── 提取结果 ──────────────────────────────────────────
@@ -76,10 +77,18 @@ class ExtractedMemoryCandidate:
 EXTRACTION_SYSTEM_PROMPT = """你是一个用户记忆提取助手。你的任务是从对话中提取用户的长期偏好、事实和风格记忆。
 
 只提取明确的、可跨会话复用的用户信息，例如:
+- 身份信息（"我叫林夜""我是后端工程师" → neutral fact）
 - 饮食偏好（"我不吃香菜" → avoid）
 - 技术偏好（"技术解释先用大白话" → prefer）
 - 个人事实（"我用 Mac 开发" → neutral）
 - 回答风格（"别讲太抽象" → prefer）
+
+身份信息特别重要，包括但不限于:
+- 真实姓名、昵称、网名
+- 职业、岗位、专业领域
+- 所在公司/学校/城市
+- 技术栈、工具偏好
+- 任何用户主动介绍的关于自己的信息
 
 不要提取:
 - 一次性的问题（"今天天气怎样"）
@@ -91,14 +100,14 @@ EXTRACTION_SYSTEM_PROMPT = """你是一个用户记忆提取助手。你的任�
 {
   "memories": [
     {
-      "text": "用户不吃香菜",
-      "tags": ["饮食", "忌口"],
-      "polarity": "avoid",
-      "confidence": 0.9,
-      "type": "preference",
-      "subject": "饮食",
-      "facet": "香菜",
-      "reason": "用户明确表示不吃香菜"
+      "text": "用户名叫林夜，是后端工程师",
+      "tags": ["身份", "职业"],
+      "polarity": "neutral",
+      "confidence": 0.95,
+      "type": "fact",
+      "subject": "身份",
+      "facet": "姓名",
+      "reason": "用户主动介绍了自己的姓名和职业"
     }
   ]
 }
@@ -289,3 +298,118 @@ async def extract_and_store_memories(
         )
 
     return stored_count
+
+
+# ─── 批量提取: extract_and_store_memories_batch ──────────
+
+async def extract_and_store_memories_batch(
+    store: UserMemoryStore,
+    namespace: str,
+    turn_pairs: list[tuple[str, str]],
+    source_conversation_id: str = "",
+) -> int:
+    """
+    批量从多轮对话中提取记忆，一次 LLM 调用搞定。
+
+    P2 优化: 攒 MEMORY_EXTRACTION_BATCH_SIZE 轮后调用，
+    将多轮对话拼接为单个提取请求，减少 66% 的 LLM 调用次数。
+
+    - 输入: [(user_text, assistant_text), ...] — 多轮对话
+    - 输出: 成功存储的记忆条数
+    - 失败时返回 0（不影响聊天）
+    """
+    if not turn_pairs:
+        return 0
+
+    # 过滤空消息
+    valid_pairs = [(u, a) for u, a in turn_pairs if u and u.strip()]
+    if not valid_pairs:
+        return 0
+
+    # 获取已有记忆文本（用于去重）
+    existing_memories = store.list_memories(namespace)
+    existing_texts = [m.text for m in existing_memories]
+
+    existing_hint = ""
+    if existing_texts:
+        existing_hint = "\n\n已有记忆（避免重复提取）:\n" + "\n".join(
+            f"- {t}" for t in existing_texts[:20]
+        )
+
+    # 将多轮对话拼接成单个提取请求
+    dialogue_text = ""
+    for i, (user_text, assistant_text) in enumerate(valid_pairs, 1):
+        dialogue_text += f"--- 第{i}轮 ---\n"
+        dialogue_text += f"用户说: {user_text}\n"
+        dialogue_text += f"助手回复: {assistant_text[:MAX_ASSISTANT_TEXT_IN_BATCH] if assistant_text else '(无回复)'}\n\n"
+
+    messages = [
+        {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": f"以下是多轮对话记录，请提取用户长期记忆:\n\n{dialogue_text}{existing_hint}",
+        },
+    ]
+
+    try:
+        response = await chat_completion(
+            messages=messages,
+            tools=[],
+            temperature=0.1,
+            max_tokens=1024,
+        )
+        content = response.choices[0].message.content or ""
+
+        # 解析 JSON
+        start = content.find("{")
+        end = content.rfind("}") + 1
+        if start < 0 or end <= start:
+            return 0
+
+        parsed = json.loads(content[start:end])
+        raw_memories = parsed.get("memories", [])
+        if not isinstance(raw_memories, list):
+            return 0
+
+        candidates: list[ExtractedMemoryCandidate] = []
+        for raw in raw_memories:
+            if not isinstance(raw, dict):
+                continue
+            candidate = ExtractedMemoryCandidate.from_dict(raw)
+            candidates.append(candidate)
+
+        candidates = candidates[:MAX_CANDIDATES_PER_TURN]
+
+        # 程序校验 + 去重 + 存储
+        stored_count = 0
+        for candidate in candidates:
+            validated = validate_candidate(candidate, existing_texts)
+            if validated is None:
+                continue
+
+            stable_key = f"mem-batch-{int(time.time() * 1000)}-{stored_count}"
+            validated.stable_key = stable_key
+            validated.source_conversation_id = source_conversation_id
+
+            await store.put(
+                namespace=namespace,
+                key=stable_key,
+                memory=validated,
+                index_fields=["text", "tags"] if is_embedding_configured() else False,
+            )
+
+            existing_texts.append(validated.text)
+            stored_count += 1
+
+        if stored_count > 0:
+            print(
+                f"[user-memory] batch-extraction-success: "
+                f"stored={stored_count}, candidates={len(candidates)}, "
+                f"turns={len(valid_pairs)}"
+            )
+
+        return stored_count
+
+    except Exception:
+        # 批量提取失败，静默返回空列表
+        return 0

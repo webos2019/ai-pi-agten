@@ -40,7 +40,10 @@ function renderMarkdown(content: string): string {
             wrapper.appendChild(header)
             wrapper.appendChild(pre)
         })
-        return div.innerHTML
+        // 清理 marked/highlight.js 可能产生的 &nbsp; (non-breaking space HTML entity)
+        let result = div.innerHTML
+        result = result.replace(/&nbsp;/g, ' ')
+        return result
     }
     return escapeHtml(content)
 }
@@ -85,10 +88,13 @@ function renderBlock(block: ChatBlock, key: number): React.ReactNode {
             let displayResult = block.toolResult || ''
             let isError = false
             let weatherData: any = null
+            let wechatData: any = null
+            let parsedJson: any = null
             try {
-                const parsed = JSON.parse(displayResult)
-                if (parsed.error) { displayResult = parsed.error; isError = true }
-                else if (parsed.city && parsed.temperature !== undefined) weatherData = parsed
+                parsedJson = JSON.parse(displayResult)
+                if (parsedJson.error) { displayResult = parsedJson.error; isError = true }
+                else if (parsedJson.city && parsedJson.temperature !== undefined) weatherData = parsedJson
+                else if (parsedJson.url && parsedJson.content && ('account_name' in parsedJson || 'author' in parsedJson)) wechatData = parsedJson
             } catch { /* not JSON */ }
 
             if (weatherData) {
@@ -105,7 +111,91 @@ function renderBlock(block: ChatBlock, key: number): React.ReactNode {
                 )
             }
 
+            // ── 微信公众号文章专用渲染 ──
+            // 元数据以卡片展示，正文以 Markdown 渲染
+            if (wechatData) {
+                const metaRows: React.ReactNode[] = []
+                if (wechatData.title) metaRows.push(<div key="title" className="wechat-meta-row"><span className="wechat-meta-label">标题</span><span className="wechat-meta-value">{wechatData.title}</span></div>)
+                if (wechatData.account_name) metaRows.push(<div key="acc" className="wechat-meta-row"><span className="wechat-meta-label">公众号</span><span className="wechat-meta-value">{wechatData.account_name}</span></div>)
+                if (wechatData.author) metaRows.push(<div key="author" className="wechat-meta-row"><span className="wechat-meta-label">作者</span><span className="wechat-meta-value">{wechatData.author}</span></div>)
+                if (wechatData.publish_time) metaRows.push(<div key="time" className="wechat-meta-row"><span className="wechat-meta-label">发布时间</span><span className="wechat-meta-value">{wechatData.publish_time}</span></div>)
+                if (wechatData.url) metaRows.push(<div key="url" className="wechat-meta-row"><span className="wechat-meta-label">链接</span><span className="wechat-meta-value wechat-meta-url">{wechatData.url}</span></div>)
+                const contentLen = wechatData.char_count || wechatData.content?.length || 0
+                return (
+                    <div key={key} className="tool-result-block wechat-result-block">
+                        <div className="tool-result-header flex items-center justify-between">
+                            <span className="tool-result-label">📖 微信公众号文章</span>
+                            <span className="tool-result-badge success">✓ 已读取 ({contentLen} 字)</span>
+                        </div>
+                        {metaRows.length > 0 && <div className="wechat-meta-section">{metaRows}</div>}
+                        {wechatData.content && (
+                            <div className="wechat-content-section" dangerouslySetInnerHTML={{ __html: renderMarkdown(wechatData.content) }} />
+                        )}
+                    </div>
+                )
+            }
+
+            // ── 股票行情专用渲染 ──
+            // 单只或多只股票行情，以红涨绿跌卡片展示
+            const isStockQuote = block.toolName === 'stock_quote' && parsedJson && !isError
+            if (isStockQuote) {
+                const quotes = parsedJson.quotes || (parsedJson.code ? [parsedJson] : [])
+                if (quotes.length > 0) {
+                    return (
+                        <div key={key} className="tool-result-block stock-result-block">
+                            <div className="tool-result-header flex items-center justify-between">
+                                <span className="tool-result-label">📈 股票行情</span>
+                                <span className="tool-result-badge success">✓ {quotes.length} 只</span>
+                            </div>
+                            {quotes.map((q: any, i: number) => {
+                                const isUp = q.change > 0
+                                const isDown = q.change < 0
+                                const color = isUp ? '#e53e3e' : isDown ? '#38a169' : '#718096'
+                                const arrow = isUp ? '▲' : isDown ? '▼' : '—'
+                                return (
+                                    <div key={i} className="stock-quote-card">
+                                        <div className="stock-quote-header">
+                                            <div className="stock-quote-name-row">
+                                                <span className="stock-quote-name">{escapeHtml(q.name || '')}</span>
+                                                <span className="stock-quote-code">{escapeHtml(q.code || '')}</span>
+                                            </div>
+                                            <div className="stock-quote-price-row">
+                                                <span className="stock-quote-price" style={{ color }}>{q.price?.toFixed(2) || '--'}</span>
+                                                <span className="stock-quote-change" style={{ color }}>
+                                                    {arrow} {q.change?.toFixed(2) || '0.00'} ({q.change_pct_str || (q.change_pct >= 0 ? '+' : '') + q.change_pct?.toFixed(2) + '%'})
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <div className="stock-quote-grid">
+                                            <div className="stock-quote-cell"><span className="sq-label">今开</span><span className="sq-value" style={{ color }}>{q.open?.toFixed(2) || '--'}</span></div>
+                                            <div className="stock-quote-cell"><span className="sq-label">最高</span><span className="sq-value" style={{ color }}>{q.high?.toFixed(2) || '--'}</span></div>
+                                            <div className="stock-quote-cell"><span className="sq-label">最低</span><span className="sq-value" style={{ color }}>{q.low?.toFixed(2) || '--'}</span></div>
+                                            <div className="stock-quote-cell"><span className="sq-label">昨收</span><span className="sq-value">{q.pre_close?.toFixed(2) || '--'}</span></div>
+                                            <div className="stock-quote-cell"><span className="sq-label">成交量</span><span className="sq-value">{q.volume_str || '--'}</span></div>
+                                            <div className="stock-quote-cell"><span className="sq-label">成交额</span><span className="sq-value">{q.amount_str || '--'}</span></div>
+                                            <div className="stock-quote-cell"><span className="sq-label">换手率</span><span className="sq-value">{q.turnover_rate_str || '--'}</span></div>
+                                            <div className="stock-quote-cell"><span className="sq-label">振幅</span><span className="sq-value">{q.amplitude_str || '--'}</span></div>
+                                            {q.pe_ratio > 0 && <div className="stock-quote-cell"><span className="sq-label">PE(动)</span><span className="sq-value">{q.pe_ratio?.toFixed(2)}</span></div>}
+                                            {q.pb_ratio > 0 && <div className="stock-quote-cell"><span className="sq-label">PB</span><span className="sq-value">{q.pb_ratio?.toFixed(2)}</span></div>}
+                                            {q.total_market_cap_str && <div className="stock-quote-cell"><span className="sq-label">总市值</span><span className="sq-value">{q.total_market_cap_str}</span></div>}
+                                            {q.circulating_market_cap_str && <div className="stock-quote-cell"><span className="sq-label">流通</span><span className="sq-value">{q.circulating_market_cap_str}</span></div>}
+                                            {q.limit_up > 0 && <div className="stock-quote-cell"><span className="sq-label">涨停</span><span className="sq-value" style={{ color: '#e53e3e' }}>{q.limit_up?.toFixed(2)}</span></div>}
+                                            {q.limit_down > 0 && <div className="stock-quote-cell"><span className="sq-label">跌停</span><span className="sq-value" style={{ color: '#38a169' }}>{q.limit_down?.toFixed(2)}</span></div>}
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    )
+                }
+            }
+
             const success = !isError && block.isValid !== false
+            // JSON 结果 pretty-print，非 JSON 原样显示
+            let prettyResult = displayResult
+            if (parsedJson && !isError) {
+                try { prettyResult = JSON.stringify(parsedJson, null, 2) } catch { /* keep original */ }
+            }
             return (
                 <div key={key} className="tool-result-block" style={isError ? { borderColor: '#fecaca', background: 'rgba(254,242,242,0.5)' } : success ? { borderColor: '#bbf7d0', background: 'rgba(240,253,244,0.5)' } : {}}>
                     <div className="tool-result-header flex items-center justify-between">
@@ -113,7 +203,7 @@ function renderBlock(block: ChatBlock, key: number): React.ReactNode {
                         <span className={`tool-result-badge ${isError ? 'error' : 'success'}`}>{isError ? '✗ 失败' : '✓ 成功'}</span>
                     </div>
                     <div className="tool-result-content" style={isError ? { color: '#dc2626' } : {}}>
-                        <pre>{escapeHtml(displayResult)}</pre>
+                        <pre>{escapeHtml(prettyResult)}</pre>
                     </div>
                 </div>
             )

@@ -25,7 +25,7 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="list_files",
-        description="列出项目根目录下的文件",
+        description="列出项目根目录文件",
         parameters={
             "type": "object",
             "properties": {},

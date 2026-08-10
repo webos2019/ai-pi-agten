@@ -1,0 +1,66 @@
+# Higress Standalone 路由配置
+# 用于 Docker Compose 本地开发模式
+#
+# 此文件被 Higress Standalone 容器读取，定义路由规则。
+# 等价于 K8s 模式下的 HttpRoute CRD。
+
+routes:
+  # ── API 路由 → Pi Agent 后端 ──
+  - match:
+      path:
+        type: PathPrefix
+        value: /api
+    route:
+      - destination:
+          host: pi-agent
+          port: 8000
+    retry:
+      attempts: 2
+      perRetryTimeout: 120s
+      retryOn: ["5xx", "connect-failure", "refused-stream"]
+    requestHeadersToAdd:
+      - name: X-Forwarded-Proto
+        value: "http"
+
+  # ── 静态资源路由 → Pi Agent 后端 ──
+  - match:
+      path:
+        type: PathPrefix
+        value: /assets
+    route:
+      - destination:
+          host: pi-agent
+          port: 8000
+    responseHeadersToAdd:
+      - name: Cache-Control
+        value: "public, max-age=31536000, immutable"
+
+  # ── 根路径 → Pi Agent 首页 ──
+  - match:
+      path:
+        type: Exact
+        value: /
+    route:
+      - destination:
+          host: pi-agent
+          port: 8000
+    responseHeadersToAdd:
+      - name: Cache-Control
+        value: "no-cache, no-store, must-revalidate"
+
+# ── 上游服务定义 (Provider) ──
+upstreams:
+  - name: pi-agent
+    endpoints:
+      - address: pi-agent
+        port: 8000
+    connectTimeout: 10s
+    readTimeout: 300s
+    healthCheck:
+      interval: 10s
+      timeout: 3s
+      unhealthyThreshold: 3
+      healthyThreshold: 1
+      path: /api/health
+    loadBalancer:
+      policy: round_robin

@@ -62,14 +62,11 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="local-text-read",
-        description="读取本地文本文件内容",
+        description="读取项目根目录下的文本文件",
         parameters={
             "type": "object",
             "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": "要读取的文件名",
-                }
+                "filename": {"type": "string"},
             },
             "required": ["filename"],
         },

@@ -44,18 +44,14 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="text_transform",
-        description="文本转换：markdown转文本、提取链接、提取代码块、JSON美化",
+        description="文本转换：markdown转纯文本、提取链接、提取代码块、JSON美化",
         parameters={
             "type": "object",
             "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "要转换的文本内容",
-                },
+                "content": {"type": "string"},
                 "action": {
                     "type": "string",
                     "enum": ["markdown_to_text", "extract_links", "extract_code_blocks", "json_pretty"],
-                    "description": "转换操作",
                 },
             },
             "required": ["content", "action"],

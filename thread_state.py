@@ -11,14 +11,14 @@ ThreadState — 短期记忆系统
 - 最终回复写入流开始时的会话 (不随 UI 切换变动)
 
 三层记忆结构:
-- recent messages: 最近 4 轮对话原文 (≤8 条)
+- recent messages: 最近 8 轮对话原文 (≤16 条)
 - summary: 早期对话有界摘要 (≤2500 字)
 - pinned_decisions: 关键决策单独保留 (≤20 条)
 
 设计原则:
 - 只存纯文本 (id, role, text, created_at), 不存工具参数/资源内容/Agent 状态
 - 只在回合完成后写一次, 流式过程中不写
-- 超 8 条触发 compaction, 模型生成 summary + pinned_decisions
+- 超 16 条触发 compaction, 模型生成 summary + pinned_decisions
 - 工具/Agent 只存最终用户可见文本, 执行过程不进记忆
 - memory 失败不影响用户已收到的回答 (安全降级)
 """
@@ -36,11 +36,12 @@ from duckdb_store import DuckDBPersistence
 
 
 # ─── 常量 ──────────────────────────────────────────────
-MAX_RECENT_MESSAGES = 8          # 最近 4 轮 = 8 条
-MAX_SUMMARY_CHARS = 2500         # 摘要上限
-COMPACT_TOKEN_THRESHOLD = 4800   # token 估算阈值（约 60% 上下文窗口）
+MAX_RECENT_MESSAGES = 16         # 最近 8 轮 = 16 条（原 8 条太激进，上下文容易丢）
+MAX_SUMMARY_CHARS = 3000         # 摘要上限（提高至 3000 字，保留更多背景）
+COMPACT_TOKEN_THRESHOLD = 16000  # token 估算阈值（DeepSeek 64K 上下文，16K 仍很安全）
 TOKEN_ESTIMATE_DIVISOR = 3.5    # 字符数 / 3.5 ≈ token 数（中英混合估算）
-COMPACT_COOLDOWN_MESSAGES = 4   # 压缩冷却期：压缩后至少新增 4 条才再次触发
+COMPACT_COOLDOWN_MESSAGES = 10  # 压缩冷却期（原 6 太短，频繁压缩打断 Context Cache）
+MEMORY_EXTRACTION_BATCH_SIZE = 3  # 记忆提取批量大小：攒 N 轮才提取一次
 MAX_PINNED_DECISIONS = 20        # 关键决策上限
 MAX_PINNED_DECISION_CHARS = 300  # 每条决策上限
 MAX_ASSISTANT_TEXT_CHARS = 8000  # 单条助手回答上限
@@ -68,6 +69,9 @@ class ThreadState:
     pinned_decisions: list[str] = field(default_factory=list)
     last_compacted_at: float = 0.0
     messages_count_at_last_compact: int = 0  # 上次压缩后的消息数（用于冷却期）
+    # P2: 记忆提取批量化 — 攒 N 轮才提取一次
+    extraction_turn_count: int = 0
+    pending_extraction_pairs: list[tuple[str, str]] = field(default_factory=list)
 
     def append(self, role: str, text: str) -> bool:
         """
@@ -102,6 +106,10 @@ class ThreadState:
         - token 感知：按字符估算总 token（messages + summary + pinned），
           超过阈值才触发，避免短消息对话频繁压缩、长消息对话迟迟不压
         - 冷却期：上次压缩后至少新增 COMPACT_COOLDOWN_MESSAGES 条才再次触发
+
+        P1 调整: 阈值从 4800 提高到 16000，冷却期从 4 提高到 10。
+        原因: DeepSeek Context Cache 命中时，多保留历史消息的边际成本降为 1/10，
+        压缩频率过高反而打断缓存，得不偿失。
         """
         if len(self.messages) <= MAX_RECENT_MESSAGES:
             return False
@@ -505,12 +513,17 @@ async def compact_thread(state: ThreadState) -> None:
         "你是一个对话压缩助手。请基于【已有摘要】和【新增早期对话】，"
         "输出一个全新的整合摘要（不超过2500字），覆盖之前的摘要，"
         "保留所有关键信息和上下文，消除多次压缩产生的冗余累积。\n\n"
-        "同时提取用户明确拍板的关键决策、架构边界、重要结论"
-        "（每条不超过300字，最多20条）。\n\n"
+        "同时提取两类关键信息:\n"
+        "1. 用户明确拍板的关键决策、架构边界、重要结论"
+        "（每条不超过300字，最多20条）。\n"
+        "2. 用户的身份信息（姓名、职业、技术栈、公司等），"
+        "如果对话中用户明确介绍过自己，请单独提取为 'identity_facts'。\n\n"
         "只返回 JSON 格式:\n"
-        '{"summary": "全新的整合摘要", "pinned_decisions": ["...", "..."]}\n\n'
-        "注意: summary 是对已有摘要+新对话的整合重写，不是追加拼接；"
-        "pinned_decisions 只包含用户明确的决策和结论，不要包含普通对话背景。"
+        '{"summary": "全新的整合摘要", "pinned_decisions": ["...", "..."], "identity_facts": ["...", "..."]}\n\n'
+        "注意: summary 是对已有摘要+新对话的整合重写，不是追加拼接；\n"
+        "pinned_decisions 只包含用户明确的决策和结论，不要包含普通对话背景；\n"
+        "identity_facts 只包含用户主动介绍的身份信息（如'我叫XXX'、'我是后端工程师'），"
+        "如果没有则返回空数组。"
     )
 
     messages = [
@@ -530,6 +543,7 @@ async def compact_thread(state: ThreadState) -> None:
         parsed = json.loads(content[start:end])
         new_summary = parsed.get("summary", "")
         new_pinned = parsed.get("pinned_decisions", [])
+        new_identity_facts = parsed.get("identity_facts", [])
 
         # 重写摘要：用模型输出的全新整合摘要覆盖（而非拼接，避免"摘要的摘要"信息衰减）
         if new_summary:
@@ -543,6 +557,15 @@ async def compact_thread(state: ThreadState) -> None:
             if p not in existing_set and len(state.pinned_decisions) < MAX_PINNED_DECISIONS:
                 state.pinned_decisions.append(p)
                 existing_set.add(p)
+
+        # 合并身份信息（去重，优先展示）
+        identity_prefix = "[身份信息] "
+        for fact in new_identity_facts:
+            fact_str = identity_prefix + str(fact)[:MAX_PINNED_DECISION_CHARS]
+            if fact_str not in existing_set and len(state.pinned_decisions) < MAX_PINNED_DECISIONS:
+                # 身份信息插入到 pinned_decisions 最前面，确保优先展示
+                state.pinned_decisions.insert(0, fact_str)
+                existing_set.add(fact_str)
 
         state.messages = state.messages[-MAX_RECENT_MESSAGES:]
         state.last_compacted_at = time.time()

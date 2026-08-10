@@ -1,0 +1,123 @@
+# Higress HttpRoute — 路由规则
+#
+# 定义请求如何从网关转发到 Provider (HttpService)。
+# 这是 Higress 的核心配置：URL 路径 → 后端服务的映射关系。
+#
+# 路由匹配优先级：精确路径 > 前缀路径（长前缀优先）
+# 所有路由都绑定到 pi-gateway，共享同一个网关入口
+
+---
+# 路由 1: API 接口 → Pi Agent 后端
+# 包括: /api/chat, /api/conversations, /api/health, /api/memories 等
+apiVersion: networking.higress.io/v1
+kind: HttpRoute
+metadata:
+  name: pi-agent-api-route
+  namespace: higress-system
+  labels:
+    app: pi-agent
+spec:
+  parentRefs:
+    - name: pi-gateway
+      namespace: higress-system
+  hostnames:
+    - pi-agent.local
+    - pi-agent.example.com
+  rules:
+    # API 路由 — 匹配 /api/* 前缀
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api
+      filters:
+        # 请求头修改 — 添加 X-Forwarded-For 传递真实客户端 IP
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            add:
+              - name: X-Forwarded-Proto
+                value: "http"
+              - name: X-Request-Start
+                value: "t=%START_TIME%"
+      backendRefs:
+        - name: pi-agent-service
+          namespace: higress-system
+          port: 8000
+          weight: 100
+      # 重试策略（对话接口可能因 LLM 超时需要重试）
+      retries:
+        attempts: 2
+        perRetryTimeout: 120s
+        retryOn:
+          - "5xx"
+          - "connect-failure"
+          - "refused-stream"
+
+---
+# 路由 2: 前端静态资源 → Pi Agent 后端
+# 匹配 /assets/* (JS/CSS/图片等 Vite 构建产物)
+apiVersion: networking.higress.io/v1
+kind: HttpRoute
+metadata:
+  name: pi-agent-assets-route
+  namespace: higress-system
+  labels:
+    app: pi-agent
+spec:
+  parentRefs:
+    - name: pi-gateway
+      namespace: higress-system
+  hostnames:
+    - pi-agent.local
+    - pi-agent.example.com
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /assets
+      backendRefs:
+        - name: pi-agent-service
+          namespace: higress-system
+          port: 8000
+          weight: 100
+      # 静态资源缓存策略
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            add:
+              - name: Cache-Control
+                value: "public, max-age=31536000, immutable"
+
+---
+# 路由 3: 根路径 → Pi Agent 首页
+# 匹配 / (index.html)
+apiVersion: networking.higress.io/v1
+kind: HttpRoute
+metadata:
+  name: pi-agent-root-route
+  namespace: higress-system
+  labels:
+    app: pi-agent
+spec:
+  parentRefs:
+    - name: pi-gateway
+      namespace: higress-system
+  hostnames:
+    - pi-agent.local
+    - pi-agent.example.com
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /
+      backendRefs:
+        - name: pi-agent-service
+          namespace: higress-system
+          port: 8000
+          weight: 100
+      # 首页不缓存
+      filters:
+        - type: ResponseHeaderModifier
+          responseHeaderModifier:
+            add:
+              - name: Cache-Control
+                value: "no-cache, no-store, must-revalidate"

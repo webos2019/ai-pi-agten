@@ -51,14 +51,11 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="get_weather",
-        description="获取指定城市的天气信息",
+        description="查询指定城市实时天气",
         parameters={
             "type": "object",
             "properties": {
-                "city": {
-                    "type": "string",
-                    "description": "城市名称，如: 北京",
-                }
+                "city": {"type": "string"},
             },
             "required": ["city"],
         },

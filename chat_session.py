@@ -6,12 +6,13 @@ from skill_registry import skill_registry
 from tool_registry import tool_registry
 from tool_runtime import tool_runtime
 from deepseek import chat_completion
+from harness import get_harness
 
 
 class ChatSession:
     """聊天会话"""
 
-    def __init__(self, skill_id: str, messages: list[dict[str, Any]]):
+    def __init__(self, skill_id: str, messages: list[dict[str, Any]], session_id: str = ""):
         skill = skill_registry.get(skill_id)
         if not skill:
             raise ValueError(f'未知的 Skill: "{skill_id}"')
@@ -19,6 +20,7 @@ class ChatSession:
         self._skill_id = skill_id
         self._skill = skill
         self._messages = self._to_openai_messages(messages, skill_id)
+        self._session_id = session_id
 
     def get_messages(self) -> list[dict[str, Any]]:
         return self._messages
@@ -27,6 +29,19 @@ class ChatSession:
         return self._skill_id
 
     def get_system_prompt(self) -> str:
+        """获取系统提示 — 注入 Harness 补充提示和框架记忆
+
+        如果 Harness 中有补充提示或记忆，会追加到原始 system_prompt 之后。
+        Harness 失败时降级为原始 prompt（不影响聊天）。
+        """
+        try:
+            harness = get_harness()
+            harness.set_base_prompt(self._skill.system_prompt)
+            effective = harness.get_effective_system_prompt()
+            if effective and len(effective) > len(self._skill.system_prompt):
+                return effective
+        except Exception:
+            pass
         return self._skill.system_prompt
 
     def get_tool_specs(self) -> list[dict[str, Any]]:
@@ -47,6 +62,7 @@ class ChatSession:
         return await chat_completion(
             messages=full_messages,
             tools=tool_list if tool_list else None,
+            session_id=self._session_id,
         )
 
     def _to_openai_messages(
@@ -87,6 +103,6 @@ class ChatSession:
         return result
 
 
-def create_chat_session(skill_id: str, messages: list[dict[str, Any]]) -> ChatSession:
+def create_chat_session(skill_id: str, messages: list[dict[str, Any]], session_id: str = "") -> ChatSession:
     """创建聊天会话"""
-    return ChatSession(skill_id, messages)
+    return ChatSession(skill_id, messages, session_id)

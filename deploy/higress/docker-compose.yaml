@@ -1,0 +1,60 @@
+# Docker Compose — 本地 Higress 网关 + Pi Agent
+#
+# 用于本地开发测试，无需 K8s 集群。
+# Higress 以 Standalone 模式运行，通过配置文件管理路由。
+#
+# 使用方式:
+#   cd deploy/higress
+#   docker-compose up -d
+#
+# 访问地址:
+#   http://localhost:8080  — 通过 Higress 网关访问 Pi Agent
+#   http://localhost:8000  — 直接访问 Pi Agent（绕过网关，调试用）
+
+version: "3.8"
+
+services:
+  # ── Pi Agent 后端 ──
+  pi-agent:
+    build:
+      context: ../..
+      dockerfile: deploy/higress/Dockerfile
+    container_name: pi-agent
+    ports:
+      - "8000:8000"           # 直接访问（调试用）
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_API_BASE=${DEEPSEEK_API_BASE:-https://api.deepseek.com}
+      - DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-chat}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_API_BASE=${EMBEDDING_API_BASE:-https://api.openai.com/v1}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - DUCKDB_PATH=/data/pi_agent.duckdb
+    volumes:
+      - pi-agent-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Higress 网关 (Standalone 模式) ──
+  higress:
+    image: higress-registry.cn-hangzhou.cr.aliyuncs.com/higress/all-in-one:latest
+    container_name: higress-gateway
+    ports:
+      - "8080:80"              # HTTP 网关入口
+      - "8443:443"             # HTTPS 网关入口（可选）
+    volumes:
+      - ./higress-config:/data
+    environment:
+      - HIGRESS_MODE=standalone
+    depends_on:
+      pi-agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pi-agent-data:

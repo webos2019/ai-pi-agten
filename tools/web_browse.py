@@ -42,12 +42,12 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="web_browse",
-        description="浏览网页内容，提取正文文本",
+        description="浏览网页并提取正文文本",
         parameters={
             "type": "object",
             "properties": {
-                "url": {"type": "string", "description": "要浏览的网页URL"},
-                "maxChars": {"type": "number", "description": "最大返回字符数，默认2000"},
+                "url": {"type": "string"},
+                "maxChars": {"type": "number"},
             },
             "required": ["url"],
         },

@@ -169,6 +169,20 @@ def create_recovery_fallback_chunk(message: str, fallback_method: str) -> dict[s
     }
 
 
+def create_usage_chunk(
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+) -> dict[str, Any]:
+    """usage chunk — 携带本轮 LLM 调用的 token 用量"""
+    return {
+        "type": "usage",
+        "promptTokens": prompt_tokens,
+        "completionTokens": completion_tokens,
+        "totalTokens": total_tokens,
+    }
+
+
 def create_done_chunk() -> dict[str, Any]:
     return {"type": "done"}
 

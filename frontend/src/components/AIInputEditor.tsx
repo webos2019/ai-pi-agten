@@ -140,7 +140,7 @@ const AIInputEditor = forwardRef<AIInputEditorRef, Props>(({ placeholder, slashC
         const range = sel.getRangeAt(0)
         const textBefore = getTextBeforeCursor(range)
         if (!textBefore) return null
-        const match = textBefore.match(/(?:^|\s)\/(\w*)$/)
+        const match = textBefore.match(/(?:^|\s)\/([\w\u4e00-\u9fa5]*)$/)
         return match ? { query: match[1] } : null
     }
 
@@ -150,7 +150,7 @@ const AIInputEditor = forwardRef<AIInputEditorRef, Props>(({ placeholder, slashC
         const range = sel.getRangeAt(0)
         const textBefore = getTextBeforeCursor(range)
         if (!textBefore) return null
-        const match = textBefore.match(/(^|\s)@([\w:\/.\-]*)$/)
+        const match = textBefore.match(/(^|\s)@([\w\u4e00-\u9fa5:\/.\-]*)$/)
         return match ? { query: match[2] || '' } : null
     }
 

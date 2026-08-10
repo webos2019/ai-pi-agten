@@ -1,0 +1,117 @@
+# Pi Agent 应用部署 — K8s Deployment + Service
+# Higress 网关的后端 Provider
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pi-agent
+  namespace: higress-system
+  labels:
+    app: pi-agent
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: pi-agent
+  template:
+    metadata:
+      labels:
+        app: pi-agent
+    spec:
+      containers:
+        - name: pi-agent
+          image: pi-agent:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          env:
+            - name: DEEPSEEK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pi-agent-secrets
+                  key: deepseek-api-key
+            - name: DEEPSEEK_API_BASE
+              value: "https://api.deepseek.com"
+            - name: DEEPSEEK_MODEL
+              value: "deepseek-chat"
+            - name: EMBEDDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pi-agent-secrets
+                  key: embedding-api-key
+            - name: EMBEDDING_API_BASE
+              value: "https://api.openai.com/v1"
+            - name: EMBEDDING_MODEL
+              value: "text-embedding-3-small"
+            - name: DUCKDB_PATH
+              value: "/data/pi_agent.duckdb"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: pi-agent-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pi-agent
+  namespace: higress-system
+  labels:
+    app: pi-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: pi-agent
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pi-agent-data
+  namespace: higress-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pi-agent-secrets
+  namespace: higress-system
+type: Opaque
+stringData:
+  deepseek-api-key: "your_deepseek_api_key_here"
+  embedding-api-key: "your_embedding_api_key_here"

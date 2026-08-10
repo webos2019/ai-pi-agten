@@ -28,6 +28,7 @@ from stream import (
     create_tool_result_chunk,
     create_recovering_chunk,
     create_recovery_fallback_chunk,
+    create_usage_chunk,
 )
 from agent_runtime import (
     AgentState,
@@ -49,9 +50,121 @@ from agent_loop import (
 from steer_controller import SteerController
 from deepseek import chat_completion
 
-MAX_TOOL_CALLS = 5
+MAX_TOOL_CALLS = 8  # 支持 3-4 次搜索 + 2-3 次 web_fetch 的多轮搜索场景
 MAX_RETRY_ATTEMPTS = 3
 RETRY_DELAY_S = 2.0
+
+# ─── /refine 命令 ─────────────────────────────────────
+
+REFINE_SYSTEM_PROMPT = """你是一个持续化框架改进助手。分析当前对话轨迹，提取有证据支撑的教训。
+
+输出 JSON 格式:
+{
+  "reason": "改进原因简述",
+  "lessons": [
+    {"category": "tool_usage|reasoning|context|error_handling|pattern", "content": "教训内容", "evidence": "来自轨迹的具体引用"}
+  ],
+  "supplemental_prompts": ["补充到系统提示的指令"],
+  "skill_updates": {}
+}
+
+要求:
+- 每条教训必须有 evidence（来自轨迹的具体引用）
+- 更新必须是小而具体的，不是大而宽泛的
+- 最多提取 5 条教训
+- 如果没有可改进之处，返回 {"reason": "无需改进", "lessons": [], "supplemental_prompts": []}
+"""
+
+
+async def _handle_refine(
+    session: ChatSession,
+    lifecycle: StreamLifecycle,
+    context: dict[str, Any],
+) -> bool:
+    """处理 /refine 命令 — 审查当前轨迹并更新 harness
+
+    返回 True 表示命中 /refine 并已处理，False 表示不命中。
+    """
+    messages = session.get_messages()
+    if not messages:
+        return False
+
+    # 检测 /refine 命令
+    last_user_msg = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            last_user_msg = m.get("content", "")
+            break
+
+    if not last_user_msg.strip().lower().startswith("/refine"):
+        return False
+
+    from harness import get_harness
+    from thread_state import thread_store
+
+    harness = get_harness()
+    session_id = context.get("session_id", "")
+
+    # 1. 收集当前会话轨迹
+    transcript = []
+    if session_id:
+        registry = None
+        try:
+            from thread_state import session_store
+            registry = session_store.get(session_id)
+        except Exception:
+            pass
+        if registry:
+            for conv in registry.conversations:
+                thread = thread_store.get(conv.thread_id)
+                if thread:
+                    for msg in thread.messages:
+                        transcript.append({"role": msg.role, "content": msg.text})
+                    break  # 只取当前会话
+
+    if not transcript:
+        # 降级：用当前 messages
+        transcript = [{"role": m.get("role", "user"), "content": m.get("content", "")} for m in messages]
+
+    if len(transcript) < 2:
+        lifecycle.write_chunk(create_text_chunk("⚠️ 对话太短，无需 /refine。至少需要 2 轮对话才能提取经验。"))
+        lifecycle.emit_done_once()
+        return True
+
+    # 2. 调用 LLM 分析轨迹
+    lifecycle.write_chunk(create_text_chunk("🔍 正在审查对话轨迹...\n\n"))
+
+    try:
+        transcript_text = json.dumps(transcript[-30:], ensure_ascii=False, indent=2)
+        llm_messages = [
+            {"role": "system", "content": REFINE_SYSTEM_PROMPT},
+            {"role": "user", "content": f"请分析以下对话轨迹并提取改进建议:\n\n{transcript_text}"},
+        ]
+        response = await chat_completion(messages=llm_messages, tools=[], temperature=0.1, max_tokens=1024)
+        refine_text = response.choices[0].message.content or ""
+
+        # 3. 解析 LLM 输出
+        start = refine_text.find("{")
+        end = refine_text.rfind("}") + 1
+        if start >= 0 and end > start:
+            refine_result = json.loads(refine_text[start:end])
+        else:
+            refine_result = {"reason": "parse error", "lessons": [], "supplemental_prompts": []}
+
+        # 4. 应用更新到 harness
+        update = harness.refine(transcript, refine_result, session_id)
+
+        # 5. 输出结果
+        lifecycle.write_chunk(create_text_chunk(update["summary"]))
+        lifecycle.write_chunk(create_text_chunk(
+            f"\n\n📋 **改进原因**: {refine_result.get('reason', 'N/A')}\n\n"
+            f"下次对话时，这些经验将自动注入到系统提示中。"
+        ))
+    except Exception as e:
+        lifecycle.write_chunk(create_text_chunk(f"❌ /refine 失败: {e}"))
+
+    lifecycle.emit_done_once()
+    return True
 
 
 # ─── Agent 入口检测 ─────────────────────────────────────
@@ -207,7 +320,12 @@ async def orchestrate_chat(
 
     while recovery_attempts <= MAX_RETRY_ATTEMPTS:
         try:
-            # ── Agent 受控分支 (最优先) ──
+            # ── /refine 命令分支 (最优先) ──
+            if await _handle_refine(session, lifecycle, context):
+                lifecycle.close()
+                return
+
+            # ── Agent 受控分支 (次优先) ──
             if await _try_agent_entry(session, writer, lifecycle, context):
                 lifecycle.close()
                 return
@@ -263,7 +381,24 @@ async def _do_orchestrate(
     current_messages = list(session.get_messages())
     skill = skill_registry.get(session.get_skill_id())
     result_policy = skill.result_policy if skill else "auto"
-    tool_names = skill.tool_names if skill else []
+    tool_names = list(skill.tool_names) if skill else []
+
+    # ── 用户通过 @ 引用的工具临时加入可用列表 ──
+    # 无论当前是什么技能模式，用户显式 @ 引用的工具都应该可被 LLM 调用。
+    # 借鉴 Pi (pi.dev) 的 progressive disclosure: 用户意图驱动的工具加载。
+    structured = context.get("structured")
+    if structured and isinstance(structured, dict):
+        chips = structured.get("chips", [])
+        for chip in chips:
+            chip_type = chip.get("type") or chip.get("chipType") or ""
+            if chip_type == "tool":
+                label = chip.get("label", "")
+                data = chip.get("data", {})
+                if isinstance(data, dict) and data.get("toolName"):
+                    label = data["toolName"]
+                # 确保工具在 registry 中存在且不在列表中
+                if label and label not in tool_names and tool_registry.get(label):
+                    tool_names.append(label)
 
     # 1. 构建 AgentMessage 列表
     agent_messages = _convert_to_agent_messages(current_messages)
@@ -288,6 +423,12 @@ async def _do_orchestrate(
     # 4. 构建配置 — 所有策略通过钩子注入
     tool_call_tracker = {"count": 0}
 
+    # token 用量累加器 — stream_fn 每次调用 LLM 后累加
+    token_usage = {"prompt": 0, "completion": 0, "total": 0}
+
+    # 提取 session_id 用于 per-session LLM 配置（多公司隔离）
+    llm_session_id = context.get("session_id", "")
+
     # 创建统一的 SteerController — 普通聊天也支持流式插话
     steer_queue = context.get("steer_queue")
     steer_ctrl = SteerController(steer_queue, lifecycle)
@@ -296,7 +437,7 @@ async def _do_orchestrate(
     turn_counter = {"count": 0}
 
     async def stream_fn(ctx: AgentContext, cfg: AgentLoopConfig) -> AgentMessage:
-        return await _default_stream_fn(ctx, cfg)
+        return await _default_stream_fn(ctx, cfg, token_usage, llm_session_id)
 
     async def should_stop(
         message: AgentMessage,
@@ -339,6 +480,14 @@ async def _do_orchestrate(
     # 6. 运行 agent_loop (直接调用 run_loop，实现实时事件推送)
     new_messages: list[AgentMessage] = []
     await run_loop(agent_context, new_messages, config, None, emit)
+
+    # 发射 token 用量 chunk (在 done 之前)
+    if token_usage["total"] > 0:
+        lifecycle.write_chunk(create_usage_chunk(
+            prompt_tokens=token_usage["prompt"],
+            completion_tokens=token_usage["completion"],
+            total_tokens=token_usage["total"],
+        ))
 
     lifecycle.emit_done_once()
 
@@ -424,6 +573,8 @@ def _agent_message_to_openai(msg: AgentMessage) -> dict[str, Any]:
 async def _default_stream_fn(
     context: AgentContext,
     config: AgentLoopConfig,
+    token_usage: dict[str, int] | None = None,
+    session_id: str = "",
 ) -> AgentMessage:
     """默认的 stream_fn — 调用 DeepSeek API 获取 assistant 响应
 
@@ -454,11 +605,19 @@ async def _default_stream_fn(
             for t in context.tools
         ]
 
-    # 3. 调用 LLM
+    # 3. 调用 LLM (传入 session_id 以使用 per-session 配置)
     response = await chat_completion(
         messages=llm_messages,
         tools=tool_specs,
+        session_id=session_id,
     )
+
+    # 累加 token 用量
+    if token_usage is not None and hasattr(response, "usage") and response.usage:
+        token_usage["prompt"] += getattr(response.usage, "prompt_tokens", 0) or 0
+        token_usage["completion"] += getattr(response.usage, "completion_tokens", 0) or 0
+        token_usage["total"] += getattr(response.usage, "total_tokens", 0) or 0
+
     choice = response.choices[0]
     message = choice.message
 

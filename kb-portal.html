@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>📚 知识库录入 — Pi Agent</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: linear-gradient(180deg, #F7F9FC 0%, #EDF1F7 100%);
+      min-height: 100vh; color: #2E3A59;
+    }
+    .container { max-width: 680px; margin: 0 auto; padding: 40px 24px; }
+    .header { text-align: center; margin-bottom: 32px; }
+    .header h1 {
+      font-size: 26px; font-weight: 800;
+      background: linear-gradient(135deg, #3366FF, #598BFF);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text; margin-bottom: 6px;
+    }
+    .header p { font-size: 14px; color: #8F9BB3; }
+    .badge {
+      display: inline-block; margin-top: 10px; padding: 4px 14px;
+      background: #F0F5FF; border: 1px solid #D0E0FF; border-radius: 100px;
+      font-size: 12px; color: #3366FF; font-weight: 600;
+    }
+    .card {
+      background: #FFF; border: 1px solid #E4E9F2; border-radius: 16px;
+      padding: 28px; margin-bottom: 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+    }
+    .section-title {
+      font-size: 14px; font-weight: 700; color: #2E3A59;
+      margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .form-group { margin-bottom: 20px; }
+    .form-label {
+      display: block; font-size: 13px; font-weight: 600;
+      color: #2E3A59; margin-bottom: 8px;
+    }
+    .form-label small { font-weight: 400; color: #8F9BB3; font-size: 12px; }
+    .form-input, .form-textarea {
+      width: 100%; padding: 12px 14px; border: 1px solid #E4E9F2;
+      border-radius: 10px; font-size: 14px; color: #2E3A59;
+      background: #F7F9FC; outline: none; transition: all 0.3s;
+      font-family: inherit; box-sizing: border-box;
+    }
+    .form-input:focus, .form-textarea:focus {
+      border-color: #3366FF; background: #FFF;
+      box-shadow: 0 0 0 3px rgba(51,102,255,0.1);
+    }
+    .form-textarea { resize: vertical; min-height: 160px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tab {
+      flex: 1; text-align: center; padding: 10px; border: 2px solid #E4E9F2;
+      border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600;
+      color: #8F9BB3; transition: all 0.3s;
+    }
+    .tab.active { border-color: #3366FF; background: #F0F5FF; color: #3366FF; }
+    .btn {
+      width: 100%; padding: 14px 24px; color: white; border: none; border-radius: 12px;
+      font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.3s;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+      box-shadow: 0 4px 16px rgba(51,102,255,0.3);
+    }
+    .btn-primary { background: linear-gradient(135deg, #3366FF 0%, #598BFF 100%); }
+    .btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 6px 24px rgba(51,102,255,0.4); }
+    .btn:disabled { background: #B0B8C4; cursor: not-allowed; transform: none; box-shadow: none; }
+    .spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .alert { margin-top: 16px; padding: 14px 16px; border-radius: 10px; font-size: 14px; display: none; }
+    .alert.show { display: block; }
+    .alert.success { background: #EDFFF5; border: 1px solid #B8E8D0; color: #009E60; }
+    .alert.error { background: #FFF2F2; border: 1px solid #FFE0E0; color: #FF3D71; }
+    .doc-list { display: flex; flex-direction: column; gap: 8px; }
+    .doc-item {
+      display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+      background: #F7F9FC; border: 1px solid #E4E9F2; border-radius: 10px;
+    }
+    .doc-icon { font-size: 1.2rem; }
+    .doc-info { flex: 1; min-width: 0; }
+    .doc-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .doc-meta { font-size: 12px; color: #8F9BB3; margin-top: 2px; }
+    .doc-del {
+      width: 28px; height: 28px; border: none; background: transparent; color: #8F9BB3;
+      border-radius: 6px; cursor: pointer; opacity: 0.6; flex-shrink: 0; transition: all 0.15s;
+    }
+    .doc-del:hover { background: rgba(255,61,113,0.1); color: #FF3D71; opacity: 1; }
+    .empty { text-align: center; color: #8F9BB3; font-size: 14px; padding: 24px 0; }
+    .search-row { display: flex; gap: 8px; margin-bottom: 12px; }
+    .search-row .form-input { flex: 1; }
+    .search-row .btn { width: auto; padding: 12px 20px; font-size: 14px; }
+    .search-result {
+      padding: 12px 14px; background: #F7F9FC; border: 1px solid #E4E9F2;
+      border-radius: 10px; margin-bottom: 8px;
+    }
+    .search-head { display: flex; justify-content: space-between; margin-bottom: 6px; }
+    .search-doc { font-size: 13px; font-weight: 600; color: #3366FF; }
+    .search-score { font-size: 12px; color: #8F9BB3; padding: 2px 10px; background: rgba(51,102,255,0.06); border-radius: 100px; }
+    .search-text { font-size: 13px; color: #2E3A59; line-height: 1.6; max-height: 80px; overflow: hidden; }
+    .key-hint {
+      font-size: 12px; color: #8F9BB3; margin-top: 6px; line-height: 1.5;
+    }
+    .key-hint code {
+      background: #F0F5FF; padding: 2px 6px; border-radius: 4px;
+      font-size: 11px; color: #3366FF; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>📚 知识库录入</h1>
+      <p>向 Pi Agent 知识库提交文档，AI 聊天时自动召回</p>
+      <span class="badge" id="modeBadge">离线哈希向量 · 零网络</span>
+    </div>
+
+    <!-- 录入区域 -->
+    <div class="card">
+      <div class="section-title">📝 提交知识</div>
+
+      <div class="form-group">
+        <label class="form-label">知识库密钥 <small>（从主应用工作区获取，或输入任意值创建新库）</small></label>
+        <input type="text" id="kbKey" class="form-input" placeholder="sess_xxx" value="">
+        <div class="key-hint">
+          💡 密钥就是主应用的工作区 sessionId。在主应用打开浏览器控制台输入 <code onclick="copyKeyHint()">localStorage.getItem('pi_session_id')</code> 可获取。
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">文档标题</label>
+        <input type="text" id="docTitle" class="form-input" placeholder="如：产品使用手册">
+      </div>
+
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab('text', this)">📝 粘贴文本</div>
+        <div class="tab" onclick="switchTab('url', this)">🌐 URL</div>
+      </div>
+
+      <div id="textInput" class="form-group">
+        <label class="form-label">文档内容 <small>支持 Markdown、纯文本</small></label>
+        <textarea id="docText" class="form-textarea" placeholder="在此粘贴文档内容..."></textarea>
+      </div>
+
+      <div id="urlInput" class="form-group" style="display:none;">
+        <label class="form-label">网页或 PDF 地址</label>
+        <input type="text" id="docUrl" class="form-input" placeholder="https://example.com/article.html">
+      </div>
+
+      <button class="btn btn-primary" id="submitBtn" onclick="submitDoc()">
+        <span>🚀 提交到知识库</span>
+      </button>
+
+      <div class="alert" id="alertMsg"></div>
+    </div>
+
+    <!-- 已有文档 -->
+    <div class="card">
+      <div class="section-title">📋 已有文档</div>
+      <div id="docList"><div class="empty">输入密钥后自动加载</div></div>
+    </div>
+
+    <!-- 搜索测试 -->
+    <div class="card">
+      <div class="section-title">🔍 召回测试</div>
+      <div class="search-row">
+        <input type="text" id="searchQuery" class="form-input" placeholder="输入问题测试召回..." onkeydown="if(event.key==='Enter')doSearch()">
+        <button class="btn btn-primary" onclick="doSearch()">搜索</button>
+      </div>
+      <div id="searchResults"></div>
+    </div>
+  </div>
+
+  <script>
+    let currentTab = 'text';
+
+    function switchTab(tab, el) {
+      currentTab = tab;
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      el.classList.add('active');
+      document.getElementById('textInput').style.display = tab === 'text' ? 'block' : 'none';
+      document.getElementById('urlInput').style.display = tab === 'url' ? 'block' : 'none';
+    }
+
+    function getKey() { return document.getElementById('kbKey').value.trim(); }
+
+    function showAlert(type, msg) {
+      const el = document.getElementById('alertMsg');
+      el.className = 'alert show ' + type;
+      el.textContent = msg;
+      if (type === 'success') setTimeout(() => el.classList.remove('show'), 5000);
+    }
+
+    function copyKeyHint() {
+      navigator.clipboard.writeText("localStorage.getItem('pi_session_id')");
+    }
+
+    // 加载已有文档
+    async function loadDocs() {
+      const key = getKey();
+      if (!key) { document.getElementById('docList').innerHTML = '<div class="empty">请输入密钥</div>'; return; }
+      try {
+        const resp = await fetch(`/api/kb/documents?session_id=${encodeURIComponent(key)}`);
+        const data = await resp.json();
+        if (!data.documents || data.documents.length === 0) {
+          document.getElementById('docList').innerHTML = '<div class="empty">暂无文档</div>';
+          return;
+        }
+        document.getElementById('docList').innerHTML = '<div class="doc-list">' +
+          data.documents.map(d => {
+            const icon = d.sourceType === 'pdf' ? '📄' : d.sourceType === 'url' ? '🌐' : '📃';
+            return `<div class="doc-item">
+              <div class="doc-icon">${icon}</div>
+              <div class="doc-info">
+                <div class="doc-name">${escHtml(d.title)}</div>
+                <div class="doc-meta">${d.chunkCount} 块 · ${d.charCount} 字 · ${d.sourceType}</div>
+              </div>
+              <button class="doc-del" onclick="deleteDoc('${d.docId}')" title="删除">✕</button>
+            </div>`;
+          }).join('') + '</div>';
+      } catch { document.getElementById('docList').innerHTML = '<div class="empty">加载失败</div>'; }
+    }
+
+    // 自动加载
+    document.getElementById('kbKey').addEventListener('blur', loadDocs);
+
+    // 提交文档
+    async function submitDoc() {
+      const key = getKey();
+      if (!key) { showAlert('error', '请输入知识库密钥'); return; }
+      const title = document.getElementById('docTitle').value.trim() || '未命名文档';
+      let body = { key, title };
+      if (currentTab === 'text') {
+        const text = document.getElementById('docText').value.trim();
+        if (!text) { showAlert('error', '请输入文档内容'); return; }
+        body.text = text;
+      } else {
+        const url = document.getElementById('docUrl').value.trim();
+        if (!url) { showAlert('error', '请输入 URL'); return; }
+        body.url = url;
+      }
+      const btn = document.getElementById('submitBtn');
+      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span><span>提交中...</span>';
+      try {
+        const resp = await fetch('/api/kb/ingest', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await resp.json();
+        if (!resp.ok) { showAlert('error', data.error || '提交失败'); }
+        else {
+          showAlert('success', `✅ 录入成功: ${data.document.chunkCount} 个分块, ${data.document.charCount} 字`);
+          document.getElementById('docTitle').value = '';
+          document.getElementById('docText').value = '';
+          document.getElementById('docUrl').value = '';
+          loadDocs();
+        }
+      } catch (e) { showAlert('error', '网络错误: ' + e.message); }
+      finally { btn.disabled = false; btn.innerHTML = '<span>🚀 提交到知识库</span>'; }
+    }
+
+    // 删除文档
+    async function deleteDoc(docId) {
+      const key = getKey();
+      if (!key) return;
+      try {
+        await fetch(`/api/kb/documents/${docId}?session_id=${encodeURIComponent(key)}`, { method: 'DELETE' });
+        loadDocs();
+      } catch {}
+    }
+
+    // 搜索
+    async function doSearch() {
+      const key = getKey();
+      const query = document.getElementById('searchQuery').value.trim();
+      if (!key || !query) return;
+      const el = document.getElementById('searchResults');
+      el.innerHTML = '<div class="empty">搜索中...</div>';
+      try {
+        const resp = await fetch('/api/kb/search', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId: key, query })
+        });
+        const data = await resp.json();
+        if (!data.results || data.results.length === 0) {
+          el.innerHTML = '<div class="empty">无匹配结果</div>';
+          return;
+        }
+        el.innerHTML = data.results.map(r => `
+          <div class="search-result">
+            <div class="search-head">
+              <span class="search-doc">${escHtml(r.docTitle)} · 片段${r.chunkIndex + 1}</span>
+              <span class="search-score">score: ${r.score}</span>
+            </div>
+            <div class="search-text">${escHtml(r.text)}</div>
+          </div>`).join('');
+      } catch { el.innerHTML = '<div class="empty">搜索失败</div>'; }
+    }
+
+    function escHtml(s) {
+      return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // 加载 embedding 模式
+    fetch('/api/health').then(r => r.json()).then(d => {
+      document.getElementById('modeBadge').textContent = d.embeddingModel || 'unknown';
+    }).catch(() => {});
+  </script>
+</body>
+</html>

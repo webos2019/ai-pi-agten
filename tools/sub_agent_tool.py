@@ -60,24 +60,14 @@ def register():
     tool_registry.register(ChatToolDefinition(
         name="delegate_sub_agent",
         description=(
-            "委托子任务给专用子代理处理。子代理拥有独立的 system prompt 和工具集，"
-            "可以独立运行多轮 LLM ↔ 工具循环，完成后将结果返回给父 Agent。\n\n"
-            "适用场景:\n"
-            "- 需要多步信息检索后汇总\n"
-            "- 需要专业分析后给出结论\n"
-            "- 需要生成特定格式的内容\n\n"
-            "可用子代理类型:\n" + type_desc
+            "委托子任务给专用子代理处理。可用类型:\n" + type_desc
         ),
         parameters={
             "type": "object",
             "properties": {
-                "task": {
-                    "type": "string",
-                    "description": "委托给子代理的任务描述，应清晰明确",
-                },
+                "task": {"type": "string"},
                 "agent_type": {
                     "type": "string",
-                    "description": "子代理类型",
                     "enum": [t.name for t in list_sub_agent_types()],
                     "default": "research",
                 },

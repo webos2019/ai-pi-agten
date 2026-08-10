@@ -1,0 +1,42 @@
+# Higress HttpService (Provider) — 后端服务注册
+#
+# 定义 Pi Agent 后端服务的地址、协议和连接参数。
+# Higress 网关通过此配置知道往哪里转发请求。
+#
+# 对应概念：
+#   Provider = 后端服务的 "名片"
+#   告诉网关：服务名、地址、端口、协议、超时时间
+
+apiVersion: networking.higress.io/v1
+kind: HttpService
+metadata:
+  name: pi-agent-service
+  namespace: higress-system
+  labels:
+    app: pi-agent
+spec:
+  # 后端服务地址（K8s Service 名称）
+  endpoints:
+    - address: pi-agent.higress-system.svc.cluster.local
+      port: 8000
+  # 连接配置
+  connectTimeout: 10s
+  readTimeout: 300s        # AI 对话可能需要较长时间
+  writeTimeout: 10s
+  idleTimeout: 60s
+  # 健康检查
+  healthCheck:
+    interval: 10s
+    timeout: 3s
+    unhealthyThreshold: 3
+    healthyThreshold: 1
+    path: /api/health
+  # 负载均衡策略
+  loadBalancer:
+    policy: round_robin
+  # 熔断配置
+  circuitBreaker:
+    maxConnections: 100
+    maxPendingRequests: 50
+    maxRequests: 100
+    maxRetries: 2

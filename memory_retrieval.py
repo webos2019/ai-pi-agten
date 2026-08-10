@@ -53,7 +53,7 @@ QUERY_HEAD_CHARS = 400         # 超长时保留前 400 字符
 QUERY_TAIL_CHARS = 400         # 超长时保留后 400 字符
 
 TOP_K = 8                      # 向量搜索候选数
-SCORE_THRESHOLD = 0.32         # score 阈值（低于此分数不召回）
+SCORE_THRESHOLD = 0.20         # score 阈值（低于此分数不召回）
 MIN_CONFIDENCE = 0.7           # 最低置信度
 
 MAX_SELECTED = 3               # 最终注入上限
@@ -106,11 +106,19 @@ def normalize_semantic_query(
 
     - trim + 折叠多余空白
     - 超过 800 字符：保留前 400 + 后 400（用户可能把关键信息放在末尾）
+    - 身份类查询增强：将"我是谁"类查询扩展为更丰富的语义表达
     """
     if not latest_user_text:
         return ""
 
     normalized = normalize_whitespace(latest_user_text)
+
+    # 身份类查询增强：扩展 query 以匹配身份类记忆
+    identity_keywords = ["我是谁", "我叫什么", "我的名字", "我是谁", "who am i"]
+    lower_text = normalized.lower()
+    if any(kw in lower_text for kw in identity_keywords):
+        # 扩展 query，增加与身份记忆相关的语义匹配词
+        normalized = f"{normalized} 用户身份 姓名 职业 个人信息 自我介绍"
 
     if len(normalized) <= MAX_QUERY_CHARS:
         return normalized
@@ -541,16 +549,38 @@ def build_memory_context_messages(
     将选中的记忆构建为模型上下文消息。
 
     作为补充上下文注入，不是权威答案。
-    格式: system 消息，列出用户长期偏好。
+    格式: system 消息，列出用户长期偏好和身份信息。
+    身份信息优先展示，确保 LLM 能回答"我是谁"类问题。
     """
     if not selected:
         return []
 
-    lines: list[str] = ["以下是关于该用户的长期偏好记忆，回答时请参考（当前对话内容优先于记忆）:"]
+    # 分离身份类记忆和其他记忆
+    identity_memories: list[SelectedUserMemory] = []
+    other_memories: list[SelectedUserMemory] = []
+    for mem in selected:
+        if mem.memory_type == "fact" and any(tag in ("身份", "姓名", "职业") for tag in mem.tags):
+            identity_memories.append(mem)
+        else:
+            other_memories.append(mem)
 
-    for i, mem in enumerate(selected, 1):
-        tags_str = f" [{', '.join(mem.tags)}]" if mem.tags else ""
-        lines.append(f"  {i}. {mem.text}{tags_str}")
+    lines: list[str] = ["以下是关于该用户的长期记忆，回答时请务必参考（尤其注意身份信息）:"]
+
+    # 身份信息优先
+    if identity_memories:
+        lines.append("【用户身份信息】")
+        for i, mem in enumerate(identity_memories, 1):
+            tags_str = f" [{', '.join(mem.tags)}]" if mem.tags else ""
+            lines.append(f"  {i}. {mem.text}{tags_str}")
+
+    # 其他记忆
+    if other_memories:
+        lines.append("【其他偏好记忆】")
+        for i, mem in enumerate(other_memories, 1):
+            tags_str = f" [{', '.join(mem.tags)}]" if mem.tags else ""
+            lines.append(f"  {i}. {mem.text}{tags_str}")
+
+    lines.append("注意：如果用户问'我是谁'，请优先根据上述身份信息回答。")
 
     return [{
         "role": "system",

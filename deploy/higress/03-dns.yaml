@@ -1,0 +1,63 @@
+# Higress DNS — 域名解析配置
+#
+# 将域名映射到 Higress 网关，使外部可以通过域名访问 Pi Agent。
+#
+# 工作原理：
+#   1. 用户访问 http://pi-agent.local/api/chat
+#   2. DNS 将 pi-agent.local 解析到 Higress 网关 IP
+#   3. Higress 根据 Host 头匹配 Gateway 监听器
+#   4. HttpRoute 规则将 /api/* 转发到 pi-agent-service
+#
+# 两种模式：
+#   - 本地开发: 使用 hosts 文件或 CoreDNS 本地域名
+#   - 生产环境: 使用真实域名 + 外部 DNS
+
+---
+# 方式一：CoreDNS 本地域名（K8s 集群内）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pi-agent-dns
+  namespace: higress-system
+data:
+  # 在 CoreDNS 中添加此域名的解析
+  Corefile.patch: |
+    pi-agent.local:53 {
+      forward . <HIGRESS_GATEWAY_IP>
+      cache 30
+      log
+    }
+
+---
+# 方式二：Higress DNS 代理（推荐）
+# Higress 内置 DNS 代理，自动将匹配域名的请求路由到网关
+apiVersion: networking.higress.io/v1
+kind: DNSResolve
+metadata:
+  name: pi-agent-dns
+  namespace: higress-system
+spec:
+  domains:
+    - pi-agent.local          # 本地开发域名
+    - pi-agent.example.com    # 生产域名（按需修改）
+  # 解析到 Higress 网关的 ClusterIP
+  targetRef:
+    name: pi-gateway
+    kind: Gateway
+    namespace: higress-system
+
+---
+# TLS 证书（HTTPS 可选）
+# 生产环境建议使用 cert-manager 自动签发 Let's Encrypt 证书
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pi-agent-tls
+  namespace: higress-system
+type: kubernetes.io/tls
+data:
+  # 使用 base64 编码的证书和私钥
+  # 开发环境可用 openssl 自签：
+  # openssl req -x509 -newkey rsa:2048 -keyout tls.key -out tls.crt -days 365 -nodes -subj "/CN=pi-agent.local"
+  tls.crt: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t  # 替换为实际证书
+  tls.key: LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t  # 替换为实际私钥

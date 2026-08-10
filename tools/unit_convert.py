@@ -30,13 +30,13 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="unit_convert",
-        description="单位换算，支持长度、重量、温度等",
+        description="单位换算：长度/重量/温度",
         parameters={
             "type": "object",
             "properties": {
-                "value": {"type": "number", "description": "要转换的值"},
-                "fromName": {"type": "string", "description": "源单位，如: meter, kilogram, celsius"},
-                "toName": {"type": "string", "description": "目标单位，如: kilometer, pound, fahrenheit"},
+                "value": {"type": "number"},
+                "fromName": {"type": "string"},
+                "toName": {"type": "string"},
             },
             "required": ["value", "fromName", "toName"],
         },

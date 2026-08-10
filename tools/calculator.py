@@ -110,14 +110,11 @@ async def execute(args: dict[str, Any], context: dict[str, Any]) -> dict[str, An
 def register():
     tool_registry.register(ChatToolDefinition(
         name="calculator",
-        description="执行数学计算，支持加减乘除及括号优先级",
+        description="数学表达式求值，支持加减乘除及括号",
         parameters={
             "type": "object",
             "properties": {
-                "expression": {
-                    "type": "string",
-                    "description": "数学表达式，如: 1+2*3",
-                }
+                "expression": {"type": "string"},
             },
             "required": ["expression"],
         },

@@ -68,14 +68,11 @@ def _fmt_input(args: dict[str, Any]) -> str:
 def register():
     tool_registry.register(ChatToolDefinition(
         name="get_location",
-        description="获取IP地址对应的地理位置",
+        description="通过IP获取地理位置",
         parameters={
             "type": "object",
             "properties": {
-                "ip": {
-                    "type": "string",
-                    "description": "IP地址，可选，默认使用客户端IP",
-                }
+                "ip": {"type": "string"},
             },
         },
         execute=execute,

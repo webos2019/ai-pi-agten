@@ -1,0 +1,1131 @@
+{
+  "scan_time": "2026-07-22 23:05:45",
+  "total_stocks_scanned": 5200,
+  "golden_cross_count": 2183,
+  "top_n": 30,
+  "results": [
+    {
+      "rank": 1,
+      "code": "600874",
+      "name": "创业环保",
+      "symbol": "sh600874",
+      "last_close": 5.47,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 2.62,
+        "debt_ratio": 55.0781,
+        "net_margin": 25.2829,
+        "eps": 0.185,
+        "bvps": 7.447,
+        "current_ratio": 2.6781,
+        "quick_ratio": 2.6661
+      },
+      "signals_e": [
+        "绿色产业(环保) 环境风险低",
+        "绿色概念(环保) +1"
+      ],
+      "signals_s": [
+        "净利率=25.3% 盈利能力强 社会贡献大",
+        "速动比率=2.67>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.23) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=2.6%<8% 治理效率偏低",
+        "资产负债率=55.1%<60% 财务可控",
+        "EPS=0.185>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 2,
+      "code": "605117",
+      "name": "德业股份",
+      "symbol": "sh605117",
+      "last_close": 80.46,
+      "cross_types": [
+        "MACD金叉",
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 2,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 10.27,
+        "debt_ratio": 47.1349,
+        "net_margin": 26.6187,
+        "eps": 1.3054,
+        "bvps": 12.7355,
+        "current_ratio": 1.6633,
+        "quick_ratio": 1.4059
+      },
+      "signals_e": [
+        "绿色产业(光伏逆变器) 环境风险低"
+      ],
+      "signals_s": [
+        "净利率=26.6% 盈利能力强 社会贡献大",
+        "速动比率=1.41>1.0 流动性健康",
+        "成交量萎缩(近5日/20日=0.76) 关注度下降"
+      ],
+      "signals_g": [
+        "ROE=10.3%>8% 治理效率良好",
+        "资产负债率=47.1%<60% 财务可控",
+        "EPS=1.3054>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 3,
+      "code": "688248",
+      "name": "南网科技",
+      "symbol": "sh688248",
+      "last_close": 42.8,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 1.49,
+        "debt_ratio": 30.1998,
+        "net_margin": 11.3834,
+        "eps": 0.0897,
+        "bvps": 5.942,
+        "current_ratio": 3.02,
+        "quick_ratio": 2.3084
+      },
+      "signals_e": [
+        "绿色产业(储能) 环境风险低"
+      ],
+      "signals_s": [
+        "净利率=11.4% 盈利能力正常",
+        "速动比率=2.31>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.57) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=1.5%<8% 治理效率偏低",
+        "资产负债率=30.2%<40% 财务稳健",
+        "EPS=0.0897>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 4,
+      "code": "688309",
+      "name": "恒誉环保",
+      "symbol": "sh688309",
+      "last_close": 58.36,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 5.23,
+        "debt_ratio": 17.4032,
+        "net_margin": 24.6914,
+        "eps": 0.536,
+        "bvps": 11.3106,
+        "current_ratio": 3.4264,
+        "quick_ratio": 3.0884
+      },
+      "signals_e": [
+        "绿色产业(环保) 环境风险低",
+        "绿色概念(环保) +1"
+      ],
+      "signals_s": [
+        "净利率=24.7% 盈利能力强 社会贡献大",
+        "速动比率=3.09>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.23) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=5.2%<8% 治理效率偏低",
+        "资产负债率=17.4%<40% 财务稳健",
+        "EPS=0.536>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 5,
+      "code": "688348",
+      "name": "昱能科技",
+      "symbol": "sh688348",
+      "last_close": 29.59,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 1.84,
+        "debt_ratio": 25.0773,
+        "net_margin": 5.4996,
+        "eps": 0.3319,
+        "bvps": 21.3697,
+        "current_ratio": 3.4643,
+        "quick_ratio": 2.4902
+      },
+      "signals_e": [
+        "绿色产业(光伏) 环境风险低"
+      ],
+      "signals_s": [
+        "净利率=5.5% 盈利能力正常",
+        "速动比率=2.49>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.89) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=1.8%<8% 治理效率偏低",
+        "资产负债率=25.1%<40% 财务稳健",
+        "EPS=0.3319>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 6,
+      "code": "688353",
+      "name": "华盛锂电",
+      "symbol": "sh688353",
+      "last_close": 89.4,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 2.75,
+        "debt_ratio": 19.1025,
+        "net_margin": 28.7553,
+        "eps": 0.5895,
+        "bvps": 23.0144,
+        "current_ratio": 3.9291,
+        "quick_ratio": 3.6197
+      },
+      "signals_e": [
+        "绿色产业(锂电) 环境风险低",
+        "绿色概念(锂电) +1"
+      ],
+      "signals_s": [
+        "净利率=28.8% 盈利能力强 社会贡献大",
+        "速动比率=3.62>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.25) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=2.8%<8% 治理效率偏低",
+        "资产负债率=19.1%<40% 财务稳健",
+        "EPS=0.5895>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 7,
+      "code": "688588",
+      "name": "凌志软件",
+      "symbol": "sh688588",
+      "last_close": 8.51,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 8.62,
+        "debt_ratio": 28.9778,
+        "net_margin": 10.0506,
+        "eps": 0.2649,
+        "bvps": 3.0707,
+        "current_ratio": 2.3008,
+        "quick_ratio": 2.2904
+      },
+      "signals_e": [
+        "低污染行业(软件) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=10.1% 盈利能力正常",
+        "速动比率=2.29>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.05) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=8.6%>8% 治理效率良好",
+        "资产负债率=29.0%<40% 财务稳健",
+        "EPS=0.2649>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 8,
+      "code": "688676",
+      "name": "金盘科技",
+      "symbol": "sh688676",
+      "last_close": 63.26,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 2.1,
+        "debt_ratio": 57.8164,
+        "net_margin": 7.3323,
+        "eps": 0.2428,
+        "bvps": 11.6353,
+        "current_ratio": 2.0139,
+        "quick_ratio": 1.411
+      },
+      "signals_e": [
+        "绿色产业(储能) 环境风险低"
+      ],
+      "signals_s": [
+        "净利率=7.3% 盈利能力正常",
+        "速动比率=1.41>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.92) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=2.1%<8% 治理效率偏低",
+        "资产负债率=57.8%<60% 财务可控",
+        "EPS=0.2428>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 9,
+      "code": "300093",
+      "name": "金刚光伏",
+      "symbol": "sz300093",
+      "last_close": 20.3,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 2,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 10.12,
+        "debt_ratio": 34.5682,
+        "net_margin": 67.4753,
+        "eps": 0.3762,
+        "bvps": 3.5981,
+        "current_ratio": 0.3631,
+        "quick_ratio": 0.3503
+      },
+      "signals_e": [
+        "绿色产业(光伏) 环境风险低",
+        "绿色概念(光伏) +1"
+      ],
+      "signals_s": [
+        "净利率=67.5% 盈利能力强 社会贡献大",
+        "速动比率=0.35<1.0 流动性偏紧",
+        "成交量稳定(近5日/20日=0.97) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=10.1%>8% 治理效率良好",
+        "资产负债率=34.6%<40% 财务稳健",
+        "EPS=0.3762>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 10,
+      "code": "300274",
+      "name": "阳光电源",
+      "symbol": "sz300274",
+      "last_close": 109.95,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 4.71,
+        "debt_ratio": 57.5148,
+        "net_margin": 14.4334,
+        "eps": 1.0833,
+        "bvps": 24.9729,
+        "current_ratio": 1.6562,
+        "quick_ratio": 1.1864
+      },
+      "signals_e": [
+        "绿色产业(光伏逆变器) 环境风险低"
+      ],
+      "signals_s": [
+        "净利率=14.4% 盈利能力正常",
+        "速动比率=1.19>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.93) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=4.7%<8% 治理效率偏低",
+        "资产负债率=57.5%<60% 财务可控",
+        "EPS=1.0833>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 11,
+      "code": "300664",
+      "name": "鹏鹞环保",
+      "symbol": "sz300664",
+      "last_close": 4.46,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 1.67,
+        "debt_ratio": 43.4188,
+        "net_margin": 21.9828,
+        "eps": 0.0981,
+        "bvps": 5.9528,
+        "current_ratio": 1.5278,
+        "quick_ratio": 1.4434
+      },
+      "signals_e": [
+        "绿色产业(环保) 环境风险低",
+        "绿色概念(环保) +1"
+      ],
+      "signals_s": [
+        "净利率=22.0% 盈利能力强 社会贡献大",
+        "速动比率=1.44>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.15) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=1.7%<8% 治理效率偏低",
+        "资产负债率=43.4%<60% 财务可控",
+        "EPS=0.0981>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 12,
+      "code": "300711",
+      "name": "广哈通信",
+      "symbol": "sz300711",
+      "last_close": 13.88,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 11.97,
+        "debt_ratio": 22.4835,
+        "net_margin": 16.6906,
+        "eps": 0.4977,
+        "bvps": 5.9257,
+        "current_ratio": 3.8296,
+        "quick_ratio": 3.3547
+      },
+      "signals_e": [
+        "低污染行业(通信) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=16.7% 盈利能力正常",
+        "速动比率=3.35>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.09) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=12.0%>8% 治理效率良好",
+        "资产负债率=22.5%<40% 财务稳健",
+        "EPS=0.4977>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 13,
+      "code": "300854",
+      "name": "中兰环保",
+      "symbol": "sz300854",
+      "last_close": 13.7,
+      "cross_types": [
+        "MACD金叉",
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 2.62,
+        "debt_ratio": 34.8523,
+        "net_margin": 22.5619,
+        "eps": 0.2302,
+        "bvps": 9.2908,
+        "current_ratio": 2.6137,
+        "quick_ratio": 2.5735
+      },
+      "signals_e": [
+        "绿色产业(环保) 环境风险低",
+        "绿色概念(环保) +1"
+      ],
+      "signals_s": [
+        "净利率=22.6% 盈利能力强 社会贡献大",
+        "速动比率=2.57>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.10) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=2.6%<8% 治理效率偏低",
+        "资产负债率=34.9%<40% 财务稳健",
+        "EPS=0.2302>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 14,
+      "code": "300867",
+      "name": "圣元环保",
+      "symbol": "sz300867",
+      "last_close": 15.07,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 2.79,
+        "debt_ratio": 54.932,
+        "net_margin": 28.2702,
+        "eps": 0.4157,
+        "bvps": 14.8354,
+        "current_ratio": 1.3878,
+        "quick_ratio": 1.3485
+      },
+      "signals_e": [
+        "绿色产业(环保) 环境风险低",
+        "绿色概念(环保) +1"
+      ],
+      "signals_s": [
+        "净利率=28.3% 盈利能力强 社会贡献大",
+        "速动比率=1.35>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.88) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=2.8%<8% 治理效率偏低",
+        "资产负债率=54.9%<60% 财务可控",
+        "EPS=0.4157>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 15,
+      "code": "301155",
+      "name": "海力风电",
+      "symbol": "sz301155",
+      "last_close": 38.49,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 0.23,
+        "debt_ratio": 36.5514,
+        "net_margin": 14.7663,
+        "eps": 0.0544,
+        "bvps": 27.7007,
+        "current_ratio": 2.0031,
+        "quick_ratio": 1.4134
+      },
+      "signals_e": [
+        "绿色产业(风电) 环境风险低",
+        "绿色概念(风电) +1"
+      ],
+      "signals_s": [
+        "净利率=14.8% 盈利能力正常",
+        "速动比率=1.41>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.88) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=0.2%<8% 治理效率偏低",
+        "资产负债率=36.6%<40% 财务稳健",
+        "EPS=0.0544>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 16,
+      "code": "301203",
+      "name": "国泰环保",
+      "symbol": "sz301203",
+      "last_close": 31.02,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 8,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 1.33,
+        "debt_ratio": 3.7737,
+        "net_margin": 15.9397,
+        "eps": 0.2347,
+        "bvps": 17.6306,
+        "current_ratio": 21.2906,
+        "quick_ratio": 20.8155
+      },
+      "signals_e": [
+        "绿色产业(环保) 环境风险低",
+        "绿色概念(环保) +1"
+      ],
+      "signals_s": [
+        "净利率=15.9% 盈利能力正常",
+        "速动比率=20.82>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.16) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=1.3%<8% 治理效率偏低",
+        "资产负债率=3.8%<40% 财务稳健",
+        "EPS=0.2347>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 17,
+      "code": "600008",
+      "name": "首创环保",
+      "symbol": "sh600008",
+      "last_close": 2.88,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 3,
+      "esg_s": 3,
+      "esg_g": 1,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 1.38,
+        "debt_ratio": 63.2275,
+        "net_margin": 14.414,
+        "eps": 0.0824,
+        "bvps": 5.4693,
+        "current_ratio": 1.193,
+        "quick_ratio": 1.1605
+      },
+      "signals_e": [
+        "绿色产业(环保) 环境风险低",
+        "绿色概念(环保) +1"
+      ],
+      "signals_s": [
+        "净利率=14.4% 盈利能力正常",
+        "速动比率=1.16>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.28) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=1.4%<8% 治理效率偏低",
+        "资产负债率=63.2%>60% 杠杆偏高",
+        "EPS=0.0824>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 18,
+      "code": "600666",
+      "name": "奥瑞德",
+      "symbol": "sh600666",
+      "last_close": 3.18,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 1,
+      "esg_s": 3,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 14.14,
+        "debt_ratio": 49.1947,
+        "net_margin": 28.5277,
+        "eps": 0.0482,
+        "bvps": 0.4101,
+        "current_ratio": 1.2681,
+        "quick_ratio": 1.1229
+      },
+      "signals_e": [
+        "行业风险未知 默认中等"
+      ],
+      "signals_s": [
+        "净利率=28.5% 盈利能力强 社会贡献大",
+        "速动比率=1.12>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.00) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=14.1%>8% 治理效率良好",
+        "资产负债率=49.2%<60% 财务可控",
+        "EPS=0.0482>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 19,
+      "code": "600776",
+      "name": "东方通信",
+      "symbol": "sh600776",
+      "last_close": 11.62,
+      "cross_types": [
+        "MACD金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 1.13,
+        "debt_ratio": 18.0679,
+        "net_margin": 7.9653,
+        "eps": 0.0346,
+        "bvps": 3.0611,
+        "current_ratio": 5.074,
+        "quick_ratio": 4.2867
+      },
+      "signals_e": [
+        "低污染行业(通信) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=8.0% 盈利能力正常",
+        "速动比率=4.29>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.85) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=1.1%<8% 治理效率偏低",
+        "资产负债率=18.1%<40% 财务稳健",
+        "EPS=0.0346>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 20,
+      "code": "601928",
+      "name": "凤凰传媒",
+      "symbol": "sh601928",
+      "last_close": 9.6,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 2.08,
+        "debt_ratio": 33.3041,
+        "net_margin": 14.9955,
+        "eps": 0.1699,
+        "bvps": 8.1055,
+        "current_ratio": 1.7615,
+        "quick_ratio": 1.5446
+      },
+      "signals_e": [
+        "低污染行业(传媒) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=15.0% 盈利能力正常",
+        "速动比率=1.54>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.60) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=2.1%<8% 治理效率偏低",
+        "资产负债率=33.3%<40% 财务稳健",
+        "EPS=0.1699>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 21,
+      "code": "603025",
+      "name": "大豪科技",
+      "symbol": "sh603025",
+      "last_close": 12.31,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 1,
+      "esg_s": 3,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 8.02,
+        "debt_ratio": 32.9628,
+        "net_margin": 30.3343,
+        "eps": 0.2277,
+        "bvps": 2.9494,
+        "current_ratio": 3.1028,
+        "quick_ratio": 2.5606
+      },
+      "signals_e": [
+        "行业风险未知 默认中等"
+      ],
+      "signals_s": [
+        "净利率=30.3% 盈利能力强 社会贡献大",
+        "速动比率=2.56>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.92) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=8.0%>8% 治理效率良好",
+        "资产负债率=33.0%<40% 财务稳健",
+        "EPS=0.2277>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 22,
+      "code": "603162",
+      "name": "海通发展",
+      "symbol": "sh603162",
+      "last_close": 11.28,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 1,
+      "esg_s": 3,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 10.74,
+        "debt_ratio": 35.5398,
+        "net_margin": 15.0828,
+        "eps": 0.3805,
+        "bvps": 3.5422,
+        "current_ratio": 1.1748,
+        "quick_ratio": 1.0386
+      },
+      "signals_e": [
+        "行业风险未知 默认中等"
+      ],
+      "signals_s": [
+        "净利率=15.1% 盈利能力正常",
+        "速动比率=1.04>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.18) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=10.7%>8% 治理效率良好",
+        "资产负债率=35.5%<40% 财务稳健",
+        "EPS=0.3805>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 23,
+      "code": "603301",
+      "name": "振德医疗",
+      "symbol": "sh603301",
+      "last_close": 84.0,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 0.95,
+        "debt_ratio": 28.2953,
+        "net_margin": 5.7536,
+        "eps": 0.2165,
+        "bvps": 22.5626,
+        "current_ratio": 1.644,
+        "quick_ratio": 1.1598
+      },
+      "signals_e": [
+        "低污染行业(医疗) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=5.8% 盈利能力正常",
+        "速动比率=1.16>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.98) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=0.9%<8% 治理效率偏低",
+        "资产负债率=28.3%<40% 财务稳健",
+        "EPS=0.2165>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 24,
+      "code": "603383",
+      "name": "顶点软件",
+      "symbol": "sh603383",
+      "last_close": 27.22,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 3.0,
+        "debt_ratio": 15.4476,
+        "net_margin": 30.6053,
+        "eps": 0.2229,
+        "bvps": 7.5787,
+        "current_ratio": 5.337,
+        "quick_ratio": 4.8551
+      },
+      "signals_e": [
+        "低污染行业(软件) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=30.6% 盈利能力强 社会贡献大",
+        "速动比率=4.86>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.01) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=3.0%<8% 治理效率偏低",
+        "资产负债率=15.4%<40% 财务稳健",
+        "EPS=0.2229>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 25,
+      "code": "603444",
+      "name": "吉比特",
+      "symbol": "sh603444",
+      "last_close": 356.8,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 1,
+      "esg_s": 3,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 8.62,
+        "debt_ratio": 21.6029,
+        "net_margin": 33.3727,
+        "eps": 8.5578,
+        "bvps": 98.2339,
+        "current_ratio": 3.5082,
+        "quick_ratio": 3.5082
+      },
+      "signals_e": [
+        "行业风险未知 默认中等"
+      ],
+      "signals_s": [
+        "净利率=33.4% 盈利能力强 社会贡献大",
+        "速动比率=3.51>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.89) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=8.6%>8% 治理效率良好",
+        "资产负债率=21.6%<40% 财务稳健",
+        "EPS=8.5578>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 26,
+      "code": "603929",
+      "name": "亚翔集成",
+      "symbol": "sh603929",
+      "last_close": 168.0,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 1,
+      "esg_s": 3,
+      "esg_g": 3,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 9.82,
+        "debt_ratio": 54.7202,
+        "net_margin": 21.8905,
+        "eps": 1.1598,
+        "bvps": 11.9114,
+        "current_ratio": 1.757,
+        "quick_ratio": 1.7533
+      },
+      "signals_e": [
+        "行业风险未知 默认中等"
+      ],
+      "signals_s": [
+        "净利率=21.9% 盈利能力强 社会贡献大",
+        "速动比率=1.75>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.86) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=9.8%>8% 治理效率良好",
+        "资产负债率=54.7%<60% 财务可控",
+        "EPS=1.1598>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 27,
+      "code": "603983",
+      "name": "丸美生物",
+      "symbol": "sh603983",
+      "last_close": 30.17,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 2.94,
+        "debt_ratio": 25.5362,
+        "net_margin": 11.4602,
+        "eps": 0.2519,
+        "bvps": 8.7097,
+        "current_ratio": 1.9652,
+        "quick_ratio": 1.7744
+      },
+      "signals_e": [
+        "低污染行业(生物) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=11.5% 盈利能力正常",
+        "速动比率=1.77>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.86) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=2.9%<8% 治理效率偏低",
+        "资产负债率=25.5%<40% 财务稳健",
+        "EPS=0.2519>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 28,
+      "code": "605098",
+      "name": "行动教育",
+      "symbol": "sh605098",
+      "last_close": 53.97,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 2,
+      "esg_s": 3,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 3.81,
+        "debt_ratio": 57.3367,
+        "net_margin": 23.0736,
+        "eps": 0.3356,
+        "bvps": 8.6626,
+        "current_ratio": 1.5994,
+        "quick_ratio": 1.5982
+      },
+      "signals_e": [
+        "低污染行业(教育) 环境风险较低"
+      ],
+      "signals_s": [
+        "净利率=23.1% 盈利能力强 社会贡献大",
+        "速动比率=1.60>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.93) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=3.8%<8% 治理效率偏低",
+        "资产负债率=57.3%<60% 财务可控",
+        "EPS=0.3356>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 29,
+      "code": "605378",
+      "name": "野马电池",
+      "symbol": "sh605378",
+      "last_close": 12.22,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 3,
+      "esg_s": 2,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 4.65,
+        "debt_ratio": 18.6816,
+        "net_margin": 4.6979,
+        "eps": 0.2228,
+        "bvps": 4.7622,
+        "current_ratio": 3.6633,
+        "quick_ratio": 2.8584
+      },
+      "signals_e": [
+        "绿色产业(电池) 环境风险低",
+        "绿色概念(电池) +1"
+      ],
+      "signals_s": [
+        "净利率=4.7% 盈利能力弱",
+        "速动比率=2.86>1.0 流动性健康",
+        "成交量稳定(近5日/20日=0.82) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=4.7%<8% 治理效率偏低",
+        "资产负债率=18.7%<40% 财务稳健",
+        "EPS=0.2228>0 盈利为正"
+      ]
+    },
+    {
+      "rank": 30,
+      "code": "688032",
+      "name": "禾迈股份",
+      "symbol": "sh688032",
+      "last_close": 75.61,
+      "cross_types": [
+        "KDJ金叉"
+      ],
+      "esg_total": 7,
+      "esg_e": 3,
+      "esg_s": 2,
+      "esg_g": 2,
+      "esg_verdict": "ESG有效（正面）",
+      "fundamentals": {
+        "roe": 0.28,
+        "debt_ratio": 36.0695,
+        "net_margin": 1.5608,
+        "eps": 0.1265,
+        "bvps": 45.7912,
+        "current_ratio": 2.3932,
+        "quick_ratio": 2.0023
+      },
+      "signals_e": [
+        "绿色产业(光伏) 环境风险低"
+      ],
+      "signals_s": [
+        "净利率=1.6% 盈利能力弱",
+        "速动比率=2.00>1.0 流动性健康",
+        "成交量稳定(近5日/20日=1.32) 市场认可度良好"
+      ],
+      "signals_g": [
+        "ROE=0.3%<8% 治理效率偏低",
+        "资产负债率=36.1%<40% 财务稳健",
+        "EPS=0.1265>0 盈利为正"
+      ]
+    }
+  ]
+}

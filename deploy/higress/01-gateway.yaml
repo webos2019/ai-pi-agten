@@ -1,0 +1,34 @@
+# Higress Gateway — 网关实例
+# 监听 80 (HTTP) 和 443 (HTTPS) 端口，接收外部流量
+#
+# 这是 Higress 的入口点，所有外部请求先到这里，
+# 再根据 HttpRoute 规则转发到对应的 HttpService (Provider)
+
+apiVersion: networking.higress.io/v1
+kind: Gateway
+metadata:
+  name: pi-gateway
+  namespace: higress-system
+  labels:
+    app: pi-agent
+spec:
+  gatewayClassName: higress
+  listeners:
+    # HTTP 监听器 — 端口 80
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+    # HTTPS 监听器 — 端口 443（可选，需要 TLS 证书）
+    - name: https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: pi-agent-tls
+      allowedRoutes:
+        namespaces:
+          from: Same

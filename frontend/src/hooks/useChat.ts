@@ -4,7 +4,7 @@ import { useStreamTextBuffer } from './useStreamTextBuffer'
 import { saveSnapshot } from '../lib/localChatStore'
 import { projectRecoverableMessages } from '../lib/stableSnapshot'
 
-const MAX_CONTEXT_ROUNDS = 8
+const MAX_CONTEXT_ROUNDS = 16
 
 export function useChat() {
     const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -14,6 +14,7 @@ export function useChat() {
     const [streamingText, setStreamingText] = useState('')
     const [steerQueueId, setSteerQueueId] = useState<string | null>(null)
     const [steerError, setSteerError] = useState<string | null>(null)
+    const [tokenUsage, setTokenUsage] = useState({ prompt: 0, completion: 0, total: 0 })
     const abortRef = useRef<AbortController | null>(null)
 
     const isStreaming = status === 'loading' || status === 'streaming'
@@ -47,6 +48,14 @@ export function useChat() {
         // start chunk: 提取 steerQueueId，不加入 streamingBlocks
         if (chunk.type === 'start') {
             if (chunk.steerQueueId) setSteerQueueId(chunk.steerQueueId)
+            return
+        }
+        if (chunk.type === 'usage') {
+            setTokenUsage(prev => ({
+                prompt: prev.prompt + (chunk.promptTokens || 0),
+                completion: prev.completion + (chunk.completionTokens || 0),
+                total: prev.total + (chunk.totalTokens || 0),
+            }))
             return
         }
         if (chunk.type === 'text') { enqueue('text', chunk.content || ''); return }
@@ -161,6 +170,7 @@ export function useChat() {
         setStreamingBlocks([])
         setStreamingText('')
         setError(null)
+        setTokenUsage({ prompt: 0, completion: 0, total: 0 })
         reset()
         setStatus('idle')
         if (abortRef.current) { abortRef.current.abort(); abortRef.current = null }
@@ -279,12 +289,10 @@ export function useChat() {
 
             const assistantMessage: ChatMessage = { role: 'assistant', content: collectedText, blocks: collectedBlocks }
 
-            // ⚠️ 必须用 prev（包含刚添加的 user 消息），不能用闭包中的 messages（旧值）
-            let finalMessages: ChatMessage[] = []
-            setMessages(prev => {
-                finalMessages = trimMsgs([...prev, assistantMessage])
-                return finalMessages
-            })
+            // 直接计算最终消息列表（不依赖 setMessages 回调时序）
+            // updatedMessages 已包含 user 消息，加上 assistant 消息即为完整列表
+            const finalMessages = trimMsgs([...updatedMessages, assistantMessage])
+            setMessages(finalMessages)
             setStreamingBlocks([])
             setStreamingText('')
             setSteerQueueId(null)
@@ -292,14 +300,9 @@ export function useChat() {
 
             // ─── 流式成功完成后提交本地快照 ──────────────
             // stableSnapshot 过滤 pending 状态/空消息，只持久化稳定内容
-            // 用微任务延迟读取 finalMessages，确保 setMessages 回调已执行
-            if (sessionContext?.conversationId) {
-                queueMicrotask(() => {
-                    if (finalMessages.length > 0) {
-                        const stable = projectRecoverableMessages(finalMessages)
-                        saveSnapshot(sessionContext.conversationId, stable, Date.now()).catch(() => {})
-                    }
-                })
+            if (sessionContext?.conversationId && finalMessages.length > 0) {
+                const stable = projectRecoverableMessages(finalMessages)
+                saveSnapshot(sessionContext.conversationId, stable, Date.now()).catch(() => {})
             }
         } catch (err: any) {
             flushAndClear()
@@ -373,5 +376,6 @@ export function useChat() {
         sendMessage, cancelStream, regenerate, retry,
         hydrate, hydrateFromLocal, clearToDraft, setStatus,
         steerQueueId, steerError, sendSteer,
+        tokenUsage,
     }
 }

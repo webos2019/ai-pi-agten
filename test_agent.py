@@ -38,6 +38,12 @@ import time
 import asyncio
 import urllib.request
 
+from tool_registry import tool_registry
+from skill_registry import skill_registry
+
+# 导入 tools 模块触发自动注册所有工具
+import tools
+
 # Windows 控制台 GBK 编码无法打印 emoji，强制 UTF-8 输出
 if sys.platform == "win32":
     try:
@@ -3501,11 +3507,11 @@ def test_sub_agent():
             }, {})
         )
 
-        parsed = json.loads(result_h)
-        if parsed.get("result") == "这是子代理的分析结果":
+        # format_output 返回纯文本结果（不是 JSON）
+        if "子代理的分析结果" in result_h:
             ok("delegate_sub_agent 通过 tool_registry.execute 执行成功")
-        elif parsed.get("error"):
-            fail("工具执行返回错误", str(parsed.get("error"))[:100])
+        elif "error" in result_h.lower():
+            fail("工具执行返回错误", result_h[:100])
         else:
             fail("工具执行结果异常", result_h[:100])
     finally:
@@ -3600,6 +3606,204 @@ def test_sub_agent():
             fail("父代理未生成最终回答")
     finally:
         sub_agent_mod.chat_completion = original_fn
+
+
+def test_web_tools():
+    """测试 27g: 网络工具 — web_search / web_fetch / github_repo / youtube_analyze / pdf_extract"""
+    section("单元测试 27g: 网络工具 (Web Extension)")
+
+    from bs4 import BeautifulSoup
+
+    # ── 27g-a: web_search 工具注册验证 ──
+    tool = tool_registry.get("web_search")
+    if tool:
+        spec = tool.get_openai_tool_spec()
+        if spec["function"]["name"] == "web_search":
+            ok("web_search 工具已注册")
+        else:
+            fail("web_search 工具名称不正确")
+    else:
+        fail("web_search 工具未注册")
+
+    # ── 27g-b: web_fetch 工具注册验证 ──
+    tool = tool_registry.get("web_fetch")
+    if tool and tool.get_openai_tool_spec()["function"]["name"] == "web_fetch":
+        ok("web_fetch 工具已注册")
+    else:
+        fail("web_fetch 工具未注册")
+
+    # ── 27g-c: github_repo 工具注册验证 ──
+    tool = tool_registry.get("github_repo")
+    if tool and tool.get_openai_tool_spec()["function"]["name"] == "github_repo":
+        ok("github_repo 工具已注册")
+    else:
+        fail("github_repo 工具未注册")
+
+    # ── 27g-d: youtube_analyze 工具注册验证 ──
+    tool = tool_registry.get("youtube_analyze")
+    if tool and tool.get_openai_tool_spec()["function"]["name"] == "youtube_analyze":
+        ok("youtube_analyze 工具已注册")
+    else:
+        fail("youtube_analyze 工具未注册")
+
+    # ── 27g-e: pdf_extract 工具注册验证 ──
+    tool = tool_registry.get("pdf_extract")
+    if tool and tool.get_openai_tool_spec()["function"]["name"] == "pdf_extract":
+        ok("pdf_extract 工具已注册")
+    else:
+        fail("pdf_extract 工具未注册")
+
+    # ── 27g-f: web_fetch HTML→Markdown 转换验证 ──
+    from tools.web_fetch import _html_to_markdown
+
+    html = """
+    <html><head><title>Test Page</title></head><body>
+    <nav>Navigation</nav>
+    <article>
+    <h1>Title</h1>
+    <p>This is a paragraph.</p>
+    <h2>Subtitle</h2>
+    <ul><li>Item 1</li><li>Item 2</li></ul>
+    <pre><code class="language-python">print("hello")</code></pre>
+    <blockquote>A quote</blockquote>
+    <a href="https://example.com">Link text</a>
+    </article>
+    <footer>Footer</footer>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "lxml")
+    markdown = _html_to_markdown(soup, max_chars=5000)
+
+    if "# Title" in markdown and "This is a paragraph." in markdown:
+        ok("web_fetch HTML→Markdown 标题+段落转换正确")
+    else:
+        fail("web_fetch HTML→Markdown 标题/段落转换异常", markdown[:100])
+
+    if "- Item 1" in markdown and "- Item 2" in markdown:
+        ok("web_fetch HTML→Markdown 列表转换正确")
+    else:
+        fail("web_fetch HTML→Markdown 列表转换异常")
+
+    if "```python" in markdown and 'print("hello")' in markdown:
+        ok("web_fetch HTML→Markdown 代码块转换正确")
+    else:
+        fail("web_fetch HTML→Markdown 代码块转换异常")
+
+    if "> A quote" in markdown:
+        ok("web_fetch HTML→Markdown 引用转换正确")
+    else:
+        fail("web_fetch HTML→Markdown 引用转换异常")
+
+    if "[Link text]" in markdown and "https://example.com" in markdown:
+        ok("web_fetch HTML→Markdown 链接转换正确")
+    else:
+        fail("web_fetch HTML→Markdown 链接转换异常")
+
+    # 导航栏和页脚应被移除
+    if "Navigation" not in markdown and "Footer" not in markdown:
+        ok("web_fetch 正确移除了导航栏和页脚")
+    else:
+        fail("web_fetch 未正确移除导航栏/页脚")
+
+    # ── 27g-g: web_fetch 字符截断验证 ──
+    long_html = "<article>" + "<p>ABCDEFG</p>" * 100 + "</article>"
+    soup_g = BeautifulSoup(long_html, "lxml")
+    markdown_g = _html_to_markdown(soup_g, max_chars=100)
+    if len(markdown_g) <= 120 and "截断" in markdown_g:  # 允许截断标记的额外长度
+        ok("web_fetch 字符截断生效")
+    else:
+        fail("web_fetch 字符截断异常", f"长度 {len(markdown_g)}")
+
+    # ── 27g-h: github_repo URL 解析验证 ──
+    from tools.github_repo import _parse_repo_url
+
+    cases = [
+        ("https://github.com/microsoft/vscode", ("microsoft", "vscode")),
+        ("https://github.com/microsoft/vscode/", ("microsoft", "vscode")),
+        ("microsoft/vscode", ("microsoft", "vscode")),
+        ("facebook/react", ("facebook", "react")),
+    ]
+    all_pass = True
+    for input_str, expected in cases:
+        result = _parse_repo_url(input_str)
+        if result != expected:
+            fail(f"github_repo URL 解析失败: {input_str} → {result} (期望 {expected})")
+            all_pass = False
+    if all_pass:
+        ok("github_repo URL 解析全部正确")
+
+    # 无效输入
+    if _parse_repo_url("invalid") is None:
+        ok("github_repo 无效输入返回 None")
+    else:
+        fail("github_repo 无效输入应返回 None")
+
+    # ── 27g-i: youtube_analyze 视频 ID 提取验证 ──
+    from tools.youtube_analyze import _extract_video_id
+
+    yt_cases = [
+        ("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+        ("https://youtu.be/dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+        ("https://www.youtube.com/embed/dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+        ("https://www.youtube.com/shorts/dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+        ("dQw4w9WgXcQ", "dQw4w9WgXcQ"),
+    ]
+    all_pass_yt = True
+    for input_str, expected in yt_cases:
+        result = _extract_video_id(input_str)
+        if result != expected:
+            fail(f"youtube_analyze ID 提取失败: {input_str} → {result} (期望 {expected})")
+            all_pass_yt = False
+    if all_pass_yt:
+        ok("youtube_analyze 视频 ID 提取全部正确")
+
+    if _extract_video_id("invalid") is None:
+        ok("youtube_analyze 无效输入返回 None")
+    else:
+        fail("youtube_analyze 无效输入应返回 None")
+
+    # ── 27g-j: pdf_extract 本地文件不存在验证 ──
+    result_j = asyncio.new_event_loop().run_until_complete(
+        tool_registry.execute("pdf_extract", {"source": "/nonexistent/file.pdf"}, {})
+    )
+    parsed_j = json.loads(result_j)
+    if "不存在" in parsed_j.get("error", ""):
+        ok("pdf_extract 本地文件不存在时返回正确错误")
+    else:
+        fail("pdf_extract 文件不存在错误处理异常", str(parsed_j.get("error", ""))[:100])
+
+    # ── 27g-k: pdf_extract 参数验证 ──
+    result_k = asyncio.new_event_loop().run_until_complete(
+        tool_registry.execute("pdf_extract", {"source": ""}, {})
+    )
+    parsed_k = json.loads(result_k)
+    if "不能为空" in parsed_k.get("error", ""):
+        ok("pdf_extract 空参数返回正确错误")
+    else:
+        fail("pdf_extract 空参数错误处理异常")
+
+    # ── 27g-l: web-skill 技能发现验证 ──
+    from skill_registry import skill_registry as sreg
+    sreg.discover()
+    web_skill = sreg.get("web-skill")
+    if web_skill:
+        expected_tools = {"web_search", "web_fetch", "github_repo", "youtube_analyze", "pdf_extract", "delegate_sub_agent"}
+        actual_tools = set(web_skill.tool_names)
+        if expected_tools.issubset(actual_tools):
+            ok(f"web-skill 技能包含所有网络工具 ({len(actual_tools)} tools)")
+        else:
+            missing = expected_tools - actual_tools
+            fail("web-skill 缺少工具", str(missing))
+    else:
+        fail("web-skill 技能未被发现")
+
+    # ── 27g-m: 工具总数验证 ──
+    all_tools = tool_registry.list()
+    expected_min = 15  # 10 原有 + 5 新增网络工具
+    if len(all_tools) >= expected_min:
+        ok(f"工具总数 >= {expected_min} (实际: {len(all_tools)})")
+    else:
+        fail("工具总数不足", f"实际 {len(all_tools)} < 期望 {expected_min}")
 
 
 # ════════════════════════════════════════════════════════
@@ -4624,6 +4828,8 @@ def run_unit_tests():
     test_agent_loop_safety_limits()
     # 子代理系统测试
     test_sub_agent()
+    # 网络工具测试 (web_search / web_fetch / github_repo / youtube / pdf)
+    test_web_tools()
     # Chat Orchestrator 集成测试 (阶段一: agent_loop 迁移)
     test_orchestrator_message_conversion()
     test_orchestrator_stop_reason_mapping()

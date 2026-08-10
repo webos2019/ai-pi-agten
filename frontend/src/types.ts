@@ -77,6 +77,15 @@ export interface AIInputEditorHandle {
     setValue(text: string): void
 }
 
+// ─── Workspace (一人多公司) ──────────────────────────
+
+export interface Workspace {
+    id: string          // 工作区ID
+    name: string        // 公司名称
+    sessionId: string   // 该公司专属的 session_id
+    createdAt: number
+}
+
 // ─── Pi Agent 版本方案 URIs ────────────────────────────
 // 与 c:/newtask-pi/docs/versions/ 实际文件保持一致
 export const VERSION_PLAN_V01 = 'docs://versions/v0.1.0-controlled-tasklist-agent.md'
@@ -104,6 +113,22 @@ export const slashCommands: SlashCommand[] = [
       action: (ed) => { ed.insertToolReference('get_weather'); } },
     { label: '引用文件读取', icon: '📄', desc: '插入文件读取引用', alias: ['read', '文件读取'],
       action: (ed) => { ed.insertToolReference('local-text-read'); } },
+    { label: '读取公众号文章', icon: '📖', desc: '读取微信公众号文章并提取正文', alias: ['wechat', '公众号', '微信', 'mp', 'article'],
+      action: (ed) => { ed.insertToolReference('wechat_article'); } },
+    { label: '网络搜索', icon: '🔍', desc: '搜索互联网获取信息', alias: ['search', '搜索', '查找', 'google'],
+      action: (ed) => { ed.insertToolReference('web_search'); } },
+    { label: '网页抓取', icon: '🌐', desc: '抓取网页内容并转为 Markdown', alias: ['fetch', '抓取', '网页'],
+      action: (ed) => { ed.insertToolReference('web_fetch'); } },
+    { label: 'GitHub 仓库', icon: '🐙', desc: '克隆并分析 GitHub 仓库', alias: ['github', 'git', 'repo'],
+      action: (ed) => { ed.insertToolReference('github_repo'); } },
+    { label: 'YouTube 分析', icon: '▶️', desc: '分析 YouTube 视频内容', alias: ['youtube', '视频', 'video'],
+      action: (ed) => { ed.insertToolReference('youtube_analyze'); } },
+    { label: 'PDF 提取', icon: '📄', desc: '提取 PDF 文件文本内容', alias: ['pdf', '文档'],
+      action: (ed) => { ed.insertToolReference('pdf_extract'); } },
+    { label: '股票行情', icon: '📈', desc: '查询 A 股/创业板/ETF 实时行情', alias: ['stock', '股票', '行情', 'A股', 'ETF', '创业板'],
+      action: (ed) => { ed.insertToolReference('stock_quote'); } },
+    { label: '股票搜索', icon: '🔎', desc: '搜索股票代码和名称', alias: ['搜索股票', 'stock search'],
+      action: (ed) => { ed.insertToolReference('stock_search'); } },
     { label: '清空对话', icon: '🗑', desc: '清空当前对话历史', alias: ['clear', '清空'],
       action: (ed) => { (window as any).__clearMessages?.(); ed.clear(); } },
 ]
@@ -123,6 +148,14 @@ export const atReferences: AtReference[] = [
     { label: 'web_browse', type: 'tool', desc: '网页浏览', keywords: ['web', '网页', 'url', 'browse'] },
     { label: 'local-text-read', type: 'tool', desc: '本地文件读取', keywords: ['file', '文件', 'read'] },
     { label: 'list_files', type: 'tool', desc: '目录列表', keywords: ['list', '目录', 'files'] },
+    { label: 'wechat_article', type: 'tool', desc: '微信公众号文章读取', keywords: ['wechat', '公众号', '微信', 'mp', 'article', '文章'] },
+    { label: 'web_search', type: 'tool', desc: '网络搜索', keywords: ['search', '搜索', '查找', 'google'] },
+    { label: 'web_fetch', type: 'tool', desc: '网页抓取', keywords: ['fetch', '抓取', '网页', 'url'] },
+    { label: 'github_repo', type: 'tool', desc: 'GitHub 仓库分析', keywords: ['github', 'git', 'repo', '仓库'] },
+    { label: 'youtube_analyze', type: 'tool', desc: 'YouTube 视频分析', keywords: ['youtube', '视频', 'video'] },
+    { label: 'pdf_extract', type: 'tool', desc: 'PDF 文本提取', keywords: ['pdf', '文档', 'extract'] },
+    { label: 'stock_quote', type: 'tool', desc: 'A股实时行情', keywords: ['stock', '股票', '行情', 'A股', 'ETF', '创业板', '涨跌', '股价'] },
+    { label: 'stock_search', type: 'tool', desc: '股票代码搜索', keywords: ['搜索', '查找', '股票代码', 'stock search'] },
     // ── 上下文 ──
     { label: '当前IP', type: 'context', desc: '引用客户端IP地址' },
     { label: '对话历史', type: 'context', desc: '引用最近的对话历史' },
@@ -130,4 +163,7 @@ export const atReferences: AtReference[] = [
     { label: 'utility-skill', type: 'skill', desc: '工具技能模式' },
     { label: 'reader-skill', type: 'skill', desc: '文件与天气技能模式' },
     { label: 'tasklist', type: 'skill', desc: 'Pi Agent 任务清单生成' },
+    { label: 'wechat-skill', type: 'skill', desc: '微信公众号文章读取技能', keywords: ['wechat', '公众号', '微信', '文章'] },
+    { label: 'web-skill', type: 'skill', desc: '网络搜索与抓取技能', keywords: ['web', '搜索', '抓取', '网络'] },
+    { label: 'stock-skill', type: 'skill', desc: '股票行情查询技能', keywords: ['stock', '股票', '行情', 'A股', 'ETF', '创业板'] },
 ]
