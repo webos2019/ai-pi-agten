@@ -2,7 +2,7 @@
 id: reader-skill
 name: 信息读取
 description: 提供本地文件读取、网页浏览等信息获取能力
-tool_names: ["local-text-read", "list_files", "web_browse", "web_search", "web_fetch", "get_weather", "get_location"]
+tool_names: ["local-text-read", "list_files", "web_browse", "web_search", "web_fetch", "get_weather", "get_location", "file_download"]
 output_policy: detailed-explanation
 result_policy: summary-first
 routing_hints: ["文件", "读取", "浏览", "查看", "内容"]

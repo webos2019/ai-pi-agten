@@ -30,12 +30,21 @@ Thumbs.db
 
 # ===== 临时脚本 =====
 test.py
-_analyze_boe.py
-_fetch_boe.py
+_analyze_*.py
+_fetch_*.py
+_test_*.py
+_demo_*.py
+_tmp_*.py
 
-# ===== DuckDB 持久化数据 =====
+# ===== 用户下载内容 =====
+downloads/
+
+# ===== 数据库 / 持久化数据 =====
 *.duckdb
 *.duckdb.wal
+*.db
+*.db-wal
+*.db-shm
 data/
 
 # ===== IDE / 编辑器 =====

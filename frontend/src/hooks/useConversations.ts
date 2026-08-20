@@ -69,6 +69,7 @@ export interface ConversationItem {
     title: string
     lastActiveAt: number
     hasMessages: boolean
+    hidden?: boolean
 }
 
 export interface HydrationResult {
@@ -423,6 +424,47 @@ export function useConversations() {
         } catch { /* ignore */ }
     }, [sessionId, refreshList])
 
+    // ─── 隐藏/取消隐藏会话 ───────────────────────────
+    const [showHidden, setShowHidden] = useState(false)
+
+    const hideConversation = useCallback(async (conversationId: string) => {
+        if (!sessionId) return
+        try {
+            await fetch(`/api/conversations/${conversationId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId, hidden: true, includeHidden: showHidden }),
+            })
+            await refreshList()
+        } catch { /* ignore */ }
+    }, [sessionId, refreshList, showHidden])
+
+    const unhideConversation = useCallback(async (conversationId: string) => {
+        if (!sessionId) return
+        try {
+            await fetch(`/api/conversations/${conversationId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId, hidden: false, includeHidden: true }),
+            })
+            await refreshList()
+        } catch { /* ignore */ }
+    }, [sessionId, refreshList])
+
+    // ─── 切换显示隐藏会话 ─────────────────────────────
+    const toggleShowHidden = useCallback(async () => {
+        const newVal = !showHidden
+        setShowHidden(newVal)
+        if (!sessionId) return
+        try {
+            const resp = await fetch(`/api/conversations?session_id=${sessionId}&include_hidden=${newVal}`)
+            const data = await resp.json()
+            if (data.conversations) {
+                setConversations(data.conversations)
+            }
+        } catch { /* ignore */ }
+    }, [sessionId, showHidden])
+
     // ─── 更新会话活跃时间 (发送消息时调用) ──────────────────────────────────────────────────
     const touchConversation = useCallback(async (conversationId: string) => {
         if (!sessionId || !conversationId) return
@@ -557,6 +599,11 @@ export function useConversations() {
         recoverFromLocal,
         calibrateWithServer,
         saveLocalIndex,
+        // 隐藏功能
+        hideConversation,
+        unhideConversation,
+        showHidden,
+        toggleShowHidden,
         // 工作区
         workspaces,
         activeWorkspace,

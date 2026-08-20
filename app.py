@@ -200,12 +200,12 @@ async def get_steer_queue_status(steer_queue_id: str):
 # ─── 会话 API (多会话短期记忆容器) ──────────────────────
 
 @app.get("/api/conversations")
-async def list_conversations(session_id: str = ""):
+async def list_conversations(session_id: str = "", include_hidden: bool = False):
     """获取会话注册表 (当前浏览器会话)"""
     if not session_id:
         return JSONResponse({"error": "session_id 必填"}, status_code=400)
     registry = session_store.get_or_create(session_id)
-    return registry.to_dto()
+    return registry.to_dto(include_hidden=include_hidden)
 
 
 @app.post("/api/conversations")
@@ -249,7 +249,7 @@ async def get_conversation(conversation_id: str, session_id: str = ""):
 
 @app.patch("/api/conversations/{conversation_id}")
 async def update_conversation(conversation_id: str, request: Request):
-    """切换选中会话 / 重命名 / touch 活跃时间"""
+    """切换选中会话 / 重命名 / touch 活跃时间 / 隐藏-取消隐藏"""
     body = await request.json()
     session_id = body.get("sessionId", "")
     if not session_id:
@@ -263,7 +263,10 @@ async def update_conversation(conversation_id: str, request: Request):
         registry.touch(conversation_id)
     if body.get("touch", False):
         registry.touch(conversation_id)
-    return registry.to_dto()
+    if "hidden" in body:
+        registry.set_hidden(conversation_id, bool(body["hidden"]))
+    include_hidden = body.get("includeHidden", False)
+    return registry.to_dto(include_hidden=include_hidden)
 
 
 @app.delete("/api/conversations/{conversation_id}")
@@ -381,6 +384,21 @@ async def health():
         "embeddingConfigured": is_embedding_configured(),
         "embeddingModel": get_embedding_model_id(),
     }
+
+
+@app.post("/api/restart")
+async def restart_server():
+    """重启后端服务 — 触发进程退出，由守护脚本自动重启"""
+    import threading, os, signal
+
+    def _delayed_restart():
+        import time
+        time.sleep(1)  # 等响应返回客户端
+        # 发送 SIGTERM 给自己，守护脚本会自动重启
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    threading.Thread(target=_delayed_restart, daemon=True).start()
+    return {"status": "ok", "message": "服务将在 1 秒后重启，请稍候..."}
 
 
 # ─── 股票搜索 API ─────────────────────────────────────
@@ -1146,31 +1164,70 @@ async def kb_upload(request: Request):
             text=text,
             source_path=source_path,
         )
-        return {"ok": True, "document": doc.to_dto()}
+        return {"ok": True, "document": doc.to_api()}
     except Exception as e:
         return JSONResponse({"error": f"文档处理失败: {e}"}, status_code=500)
 
 
 @app.get("/api/kb/documents")
 async def kb_list_documents(session_id: str = ""):
-    """列出知识库文档"""
-    if not session_id:
-        return JSONResponse({"error": "session_id 必填"}, status_code=400)
-    namespace = get_kb_namespace(session_id)
-    docs = kb_store.list_documents(namespace)
+    """列出知识库文档
+    
+    - 传 session_id: 返回该工作区的文档
+    - 不传 session_id: 返回所有工作区的文档 (管理视角)
+    """
+    if session_id:
+        namespace = get_kb_namespace(session_id)
+        docs = kb_store.list_documents(namespace)
+        return {
+            "documents": [d.to_api() for d in docs],
+            "count": len(docs),
+        }
+    else:
+        # 返回所有 namespace 的文档
+        all_docs = kb_store.list_all_documents()
+        return {
+            "documents": [
+                {**doc.to_api(), "namespace": ns}
+                for ns, doc in all_docs
+            ],
+            "count": len(all_docs),
+        }
+
+
+@app.get("/api/kb/documents/{doc_id}/chunks")
+async def kb_get_document_chunks(doc_id: str, session_id: str = ""):
+    """获取文档的所有分块内容"""
+    if session_id:
+        namespace = get_kb_namespace(session_id)
+        chunks = kb_store.get_document_chunks(namespace, doc_id)
+    else:
+        # 跨 namespace 查找
+        chunks = kb_store.get_document_chunks_cross_ns(doc_id)
+    if not chunks:
+        return JSONResponse({"error": "文档不存在或无内容"}, status_code=404)
     return {
-        "documents": [d.to_dto() for d in docs],
-        "count": len(docs),
+        "docId": doc_id,
+        "chunks": [
+            {
+                "chunkIndex": c.chunk_index,
+                "text": c.text,
+            }
+            for c in chunks
+        ],
+        "count": len(chunks),
     }
 
 
 @app.delete("/api/kb/documents/{doc_id}")
 async def kb_delete_document(doc_id: str, session_id: str = ""):
     """删除知识库文档及其所有分块"""
-    if not session_id:
-        return JSONResponse({"error": "session_id 必填"}, status_code=400)
-    namespace = get_kb_namespace(session_id)
-    deleted = kb_store.delete_document(namespace, doc_id)
+    if session_id:
+        namespace = get_kb_namespace(session_id)
+        deleted = kb_store.delete_document(namespace, doc_id)
+    else:
+        # 跨 namespace 删除
+        deleted = kb_store.delete_document_cross_ns(doc_id)
     return {"ok": deleted}
 
 
@@ -1298,7 +1355,7 @@ async def kb_ingest(request: Request):
             text=text,
             source_path=source_path,
         )
-        return {"ok": True, "document": doc.to_dto()}
+        return {"ok": True, "document": doc.to_api()}
     except Exception as e:
         return JSONResponse({"error": f"录入失败: {e}"}, status_code=500)
 
@@ -1574,6 +1631,368 @@ async def schedules_cancel(job_id: str):
     return {"success": success}
 
 
+# ── Token 用量统计 API ──
+
+@app.get("/api/token-usage/today")
+async def token_usage_today(session_id: str = ""):
+    """获取今日 token 用量统计
+
+    查询参数:
+      - session_id: 传入时只统计该会话 (多公司隔离)，不传则统计全局
+
+    响应:
+      {
+        "date": "2026-08-13",
+        "promptTokens": 12345,
+        "completionTokens": 6789,
+        "totalTokens": 19134,
+        "requestCount": 5
+      }
+    """
+    from token_store import get_token_store
+    return get_token_store().get_today_stats(session_id)
+
+
+@app.get("/api/token-usage/history")
+async def token_usage_history(days: int = 7, session_id: str = ""):
+    """获取最近 N 天的 token 用量历史
+
+    查询参数:
+      - days: 天数 (默认 7)
+      - session_id: 传入时只统计该会话
+
+    响应:
+      [
+        {"date": "2026-08-13", "promptTokens": ..., "completionTokens": ..., "totalTokens": ..., "requestCount": ...},
+        ...
+      ]
+    """
+    from token_store import get_token_store
+    days = max(1, min(days, 90))  # 限制 1~90 天
+    return {"days": days, "history": get_token_store().get_history(days, session_id)}
+
+
+@app.get("/api/token-usage/recent")
+async def token_usage_recent(limit: int = 20, session_id: str = ""):
+    """获取最近的 token 用量明细记录
+
+    查询参数:
+      - limit: 最多返回条数 (默认 20，上限 100)
+      - session_id: 传入时只返回该会话的记录
+    """
+    from token_store import get_token_store
+    limit = max(1, min(limit, 100))
+    return {"records": get_token_store().get_recent_records(limit, session_id)}
+
+
+@app.get("/api/token-usage/total")
+async def token_usage_total(session_id: str = ""):
+    """获取全部历史的 token 用量汇总"""
+    from token_store import get_token_store
+    return get_token_store().get_total_stats(session_id)
+
+
+# ── Agent Manager API — 团队工作流管理 ──
+
+@app.get("/api/agents-mgr/snapshot")
+async def agents_mgr_snapshot():
+    """获取 Agent 系统快照"""
+    from agent_manager import get_agent_snapshot
+    return get_agent_snapshot()
+
+
+@app.get("/api/agents-mgr/sub-agent-types")
+async def agents_mgr_sub_agent_types():
+    from agent_manager import get_sub_agent_types
+    return {"types": get_sub_agent_types()}
+
+
+@app.get("/api/agents-mgr/tools")
+async def agents_mgr_tools():
+    from agent_manager import get_registered_tools
+    return {"tools": get_registered_tools()}
+
+
+@app.get("/api/agents-mgr/skills")
+async def agents_mgr_skills():
+    from agent_manager import get_registered_skills
+    return {"skills": get_registered_skills()}
+
+
+@app.get("/api/agents-mgr/activities")
+async def agents_mgr_activities(limit: int = 50):
+    from agent_manager import get_activities
+    return {"activities": get_activities(limit)}
+
+
+@app.get("/api/agents-mgr/executions")
+async def agents_mgr_executions():
+    from agent_manager import get_executions
+    return {"executions": get_executions()}
+
+
+@app.post("/api/agents-mgr/execute")
+async def agents_mgr_execute(request: Request):
+    from agent_manager import execute_sub_agent
+    body = await request.json()
+    agent_type = body.get("agent_type", "")
+    task = body.get("task", "")
+    if not agent_type or not task:
+        return JSONResponse({"error": "agent_type 和 task 必填"}, status_code=400)
+    return execute_sub_agent(agent_type, task)
+
+
+@app.get("/api/agents-mgr/preset-scenarios")
+async def agents_mgr_preset_scenarios():
+    from agent_manager import get_preset_scenarios
+    return {"scenarios": get_preset_scenarios()}
+
+
+@app.post("/api/agents-mgr/team-workflow")
+async def agents_mgr_team_workflow(request: Request):
+    from agent_manager import run_team_workflow
+    body = await request.json()
+    leader_task = body.get("leader_task", "")
+    workers = body.get("workers", [])
+    if not leader_task or not workers:
+        return JSONResponse({"error": "leader_task 和 workers 必填"}, status_code=400)
+    return run_team_workflow(leader_task, workers)
+
+
+@app.post("/api/agents-mgr/pipeline-workflow")
+async def agents_mgr_pipeline_workflow(request: Request):
+    from agent_manager import run_pipeline_workflow
+    body = await request.json()
+    scenario_id = body.get("scenario_id", "")
+    override_steps = body.get("override_steps")
+    if not scenario_id:
+        return JSONResponse({"error": "scenario_id 必填"}, status_code=400)
+    return run_pipeline_workflow(scenario_id, override_steps)
+
+
+@app.post("/api/agents-mgr/matrix-workflow")
+async def agents_mgr_matrix_workflow(request: Request):
+    from agent_manager import run_matrix_workflow
+    body = await request.json()
+    scenario_id = body.get("scenario_id", "")
+    override_workers = body.get("override_workers")
+    if not scenario_id:
+        return JSONResponse({"error": "scenario_id 必填"}, status_code=400)
+    return run_matrix_workflow(scenario_id, override_workers)
+
+
+@app.get("/api/agents-mgr/teams/{team_id}")
+async def agents_mgr_team_info(team_id: str):
+    from agent_manager import get_team_info
+    return get_team_info(team_id)
+
+
+@app.get("/api/agents-mgr/teams")
+async def agents_mgr_teams():
+    from agent_manager import list_teams
+    return {"teams": list_teams()}
+
+
+# ── 聊天室 API — 团队工作流聊天室模式（多任务） ──
+
+@app.get("/api/agents-mgr/chat-room")
+async def agent_chat_room_info():
+    """获取聊天室信息（成员、状态、worker 进度、当前任务）"""
+    from agent_manager import get_chat_room
+    return get_chat_room()
+
+
+@app.get("/api/agents-mgr/chat-room/history")
+async def agent_chat_room_history(limit: int = 200):
+    """获取当前任务的消息历史"""
+    from agent_manager import get_chat_history
+    return {"messages": get_chat_history(limit)}
+
+
+@app.post("/api/agents-mgr/chat-room/send")
+async def agent_chat_room_send(request: Request):
+    """发送消息到聊天室（异步执行，立即返回）
+
+    消息先记录到聊天室，worker 在后台异步执行。
+    前端通过轮询 /chat-room/history 获取最新消息。
+    """
+    from agent_manager import send_chat_message_async_bg
+    body = await request.json()
+    message = body.get("message", "").strip()
+    if not message:
+        return JSONResponse({"error": "message 必填"}, status_code=400)
+    # 后台异步执行，不阻塞请求
+    send_chat_message_async_bg(message)
+    return {"status": "ok", "message": "消息已提交，worker 正在后台处理"}
+
+
+@app.post("/api/agents-mgr/chat-room/stream")
+async def agent_chat_room_stream(request: Request):
+    """SSE 流式发送消息到聊天室 — 实时推送 worker 状态和消息
+
+    返回 text/event-stream，前端通过 EventSource 或 fetch 消费。
+    每个事件格式: data: {"type": "message"|"worker_status"|"done"|"error", ...}\\n\\n
+    """
+    from agent_manager import stream_chat_room_message
+    body = await request.json()
+    message = body.get("message", "").strip()
+    if not message:
+        return JSONResponse({"error": "message 必填"}, status_code=400)
+
+    async def sse_generator():
+        try:
+            async for sse_line in stream_chat_room_message(message):
+                yield sse_line.encode("utf-8")
+        except Exception as e:
+            import json as _json
+            error_data = _json.dumps({"type": "error", "error": str(e)}, ensure_ascii=False)
+            yield f"data: {error_data}\n\n".encode("utf-8")
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
+        },
+    )
+
+
+@app.post("/api/agents-mgr/chat-room/stop")
+async def agent_chat_room_stop():
+    """停止当前正在执行的任务
+
+    设置取消标志，worker 链在下一个检查点中断。
+    已完成的结果保留，未执行的 worker 状态重置为 idle。
+    """
+    from agent_manager import stop_chat_task
+    return stop_chat_task()
+
+
+@app.post("/api/agents-mgr/chat-room/clear")
+async def agent_chat_room_clear():
+    """清空当前任务的消息历史"""
+    from agent_manager import clear_chat_history
+    return clear_chat_history()
+
+
+# ── 多任务 API ──
+
+@app.get("/api/agents-mgr/chat-room/tasks")
+async def agent_chat_room_tasks():
+    """获取所有任务列表"""
+    from agent_manager import get_chat_tasks
+    return {"tasks": get_chat_tasks()}
+
+
+@app.get("/api/agents-mgr/chat-room/tasks/{task_id}")
+async def agent_chat_room_task_detail(task_id: str):
+    """获取单个任务详情（含消息历史）"""
+    from agent_manager import get_chat_task_detail
+    return get_chat_task_detail(task_id)
+
+
+@app.post("/api/agents-mgr/chat-room/tasks/create")
+async def agent_chat_room_task_create(request: Request):
+    """创建新任务"""
+    from agent_manager import create_chat_task
+    body = await request.json()
+    title = body.get("title", "")
+    return create_chat_task(title)
+
+
+@app.post("/api/agents-mgr/chat-room/tasks/select")
+async def agent_chat_room_task_select(request: Request):
+    """切换当前选中任务"""
+    from agent_manager import select_chat_task
+    body = await request.json()
+    task_id = body.get("task_id", "")
+    return select_chat_task(task_id)
+
+
+@app.post("/api/agents-mgr/chat-room/tasks/delete")
+async def agent_chat_room_task_delete(request: Request):
+    """删除任务"""
+    from agent_manager import delete_chat_task
+    body = await request.json()
+    task_id = body.get("task_id", "")
+    return delete_chat_task(task_id)
+
+
+@app.post("/api/agents-mgr/chat-room/tasks/rename")
+async def agent_chat_room_task_rename(request: Request):
+    """重命名任务"""
+    from agent_manager import rename_chat_task
+    body = await request.json()
+    task_id = body.get("task_id", "")
+    title = body.get("title", "")
+    return rename_chat_task(task_id, title)
+
+
+# ── Files (文件下载存储管理) ──
+
+@app.get("/api/files/list")
+async def files_list():
+    """列出所有已下载的文件"""
+    from tools.file_download import _ensure_downloads_dir, _format_file_size
+    import os as _os
+    downloads_dir = _ensure_downloads_dir()
+    try:
+        files = []
+        for name in sorted(_os.listdir(downloads_dir)):
+            filepath = _os.path.join(downloads_dir, name)
+            if not _os.path.isfile(filepath):
+                continue
+            stat = _os.stat(filepath)
+            ext = _os.path.splitext(name)[1].lower()
+            files.append({
+                "filename": name,
+                "size": stat.st_size,
+                "sizeHuman": _format_file_size(stat.st_size),
+                "extension": ext,
+                "createdAt": stat.st_ctime,
+                "modifiedAt": stat.st_mtime,
+                "downloadUrl": f"/api/files/download/{name}",
+            })
+        return {
+            "count": len(files),
+            "totalSize": sum(f["size"] for f in files),
+            "totalSizeHuman": _format_file_size(sum(f["size"] for f in files)),
+            "files": files,
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/files/download/{filename:path}")
+async def files_download(filename: str):
+    """下载已存储的文件"""
+    from tools.file_download import _sanitize_filename, DOWNLOADS_DIR
+    import os as _os
+    safe_name = _sanitize_filename(filename)
+    filepath = _os.path.join(DOWNLOADS_DIR, safe_name)
+    if not _os.path.isfile(filepath):
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    return FileResponse(filepath, filename=safe_name)
+
+
+@app.delete("/api/files/{filename:path}")
+async def files_delete(filename: str):
+    """删除已下载的文件"""
+    from tools.file_download import _sanitize_filename, DOWNLOADS_DIR
+    import os as _os
+    safe_name = _sanitize_filename(filename)
+    filepath = _os.path.join(DOWNLOADS_DIR, safe_name)
+    if not _os.path.isfile(filepath):
+        return JSONResponse({"error": "文件不存在"}, status_code=404)
+    try:
+        _os.remove(filepath)
+        return {"success": True, "filename": safe_name}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 if __name__ == "__main__":
     import uvicorn
     # reload=False: DuckDB 文件锁与 uvicorn reloader 冲突
@@ -1581,6 +2000,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "app:app",
         host="0.0.0.0",
-        port=8000,
+        port=8089,
         reload=False,
     )

@@ -33,10 +33,11 @@ def resolve_skill(explicit_skill: str | None, user_message: str) -> str:
     1. 显式技能 > 一切
     2. OA 运维关键词 → oa-ops-skill
     3. 股票关键词 → stock-skill
-    4. 搜索问答关键词（知识性问题）→ search-skill
-    5. 网络研究关键词 → web-skill
-    6. 文件读取关键词 → reader-skill
-    7. 默认 → utility-skill (已包含 web_search + web_fetch)
+    4. 文件下载/存储关键词 → file-skill
+    5. 搜索问答关键词（知识性问题）→ search-skill
+    6. 网络研究关键词 → web-skill
+    7. 文件读取关键词 → reader-skill
+    8. 默认 → utility-skill (已包含 web_search + web_fetch + file_download)
     """
     if explicit_skill:
         return explicit_skill
@@ -54,6 +55,14 @@ def resolve_skill(explicit_skill: str | None, user_message: str) -> str:
                       "市值", "涨停", "跌停", "主力", "走势", "大盘", "科创板", "stock"]
     if any(kw.lower() in lower_msg for kw in stock_keywords):
         return "stock-skill"
+
+    # 文件下载/存储 (在 reader-skill 之前匹配，避免"文件"被路由到 reader)
+    file_keywords = ["下载", "保存文件", "存储文件", "下载图片", "下载PDF",
+                     "下载文档", "转存文件", "保存到本地", "下载到本地",
+                     "download", "保存图片", "保存音频", "保存视频",
+                     "保存这个", "保存这", "存下来", "保存网", "存到"]
+    if any(kw.lower() in lower_msg for kw in file_keywords):
+        return "file-skill"
 
     # 搜索问答（知识性问题 → 专用搜索技能）
     # 匹配模式: "什么是X" "介绍一下X" "X是什么" "X的作者" "X讲了什么" 等
@@ -82,7 +91,7 @@ def resolve_skill(explicit_skill: str | None, user_message: str) -> str:
     if any(kw in lower_msg for kw in reader_keywords):
         return "reader-skill"
 
-    # 默认技能 (utility-skill 已包含 web_search + web_fetch，可处理知识性问题)
+    # 默认技能 (utility-skill 已包含 web_search + web_fetch + file_download，可处理知识性问题)
     return "utility-skill"
 
 
@@ -215,7 +224,11 @@ class ChatService:
             session = create_chat_session(resolved_skill, messages, session_id)
 
         # 将结构化请求传入 context，供 Agent Runtime 检测
-        agent_context: dict[str, Any] = {"clientIP": client_ip_req, "session_id": session_id}
+        agent_context: dict[str, Any] = {
+            "clientIP": client_ip_req,
+            "session_id": session_id,
+            "conversation_id": resolved_conversation_id,
+        }
         if structured:
             agent_context["structured"] = structured
 

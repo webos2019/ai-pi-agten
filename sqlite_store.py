@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     title TEXT DEFAULT '新对话',
     last_active_at REAL,
     has_messages INTEGER DEFAULT 0,
+    hidden INTEGER DEFAULT 0,
     PRIMARY KEY (session_id, conversation_id)
 );
 CREATE INDEX IF NOT EXISTS idx_conversations_active ON conversations(session_id, last_active_at DESC);
@@ -183,6 +184,11 @@ class SQLitePersistence:
 
             # 创建表结构
             self._conn.executescript(SCHEMA_SQL)
+            # 兼容已有数据库: 补充 hidden 列 (CREATE TABLE IF NOT EXISTS 不会修改已有表)
+            try:
+                self._conn.execute("ALTER TABLE conversations ADD COLUMN hidden INTEGER DEFAULT 0")
+            except Exception:
+                pass  # 列已存在，忽略
             self._initialized = True
             print(f"[sqlite] 持久化已启用 (WAL): {db_path}")
         except Exception as e:
@@ -413,6 +419,7 @@ class SQLitePersistence:
     def save_conversation(
         self, session_id: str, conversation_id: str, thread_id: str,
         title: str, last_active_at: float, has_messages: bool,
+        hidden: bool = False,
     ) -> None:
         if not self.is_enabled:
             return
@@ -420,9 +427,10 @@ class SQLitePersistence:
             with self._lock:
                 self._conn.execute(
                     """INSERT OR REPLACE INTO conversations
-                    (session_id, conversation_id, thread_id, title, last_active_at, has_messages)
-                    VALUES (?, ?, ?, ?, ?, ?)""",
-                    [session_id, conversation_id, thread_id, title, last_active_at, 1 if has_messages else 0],
+                    (session_id, conversation_id, thread_id, title, last_active_at, has_messages, hidden)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    [session_id, conversation_id, thread_id, title, last_active_at,
+                     1 if has_messages else 0, 1 if hidden else 0],
                 )
                 self._conn.commit()
         except Exception as e:
@@ -433,13 +441,13 @@ class SQLitePersistence:
             return []
         try:
             rows = self._conn.execute(
-                """SELECT conversation_id, thread_id, title, last_active_at, has_messages
+                """SELECT conversation_id, thread_id, title, last_active_at, has_messages, hidden
                    FROM conversations WHERE session_id = ? ORDER BY last_active_at DESC""",
                 [session_id],
             ).fetchall()
             return [
                 {"conversation_id": r[0], "thread_id": r[1], "title": r[2],
-                 "last_active_at": r[3], "has_messages": bool(r[4])}
+                 "last_active_at": r[3], "has_messages": bool(r[4]), "hidden": bool(r[5])}
                 for r in rows
             ]
         except Exception as e:
@@ -616,6 +624,32 @@ class SQLitePersistence:
                 self._conn.commit()
         except Exception as e:
             print(f"[sqlite] delete_kb_chunks 失败: {e}")
+
+    def list_kb_namespaces(self) -> list[str]:
+        """列出所有有知识库文档的 namespace"""
+        if not self.is_enabled:
+            return []
+        try:
+            rows = self._conn.execute(
+                "SELECT DISTINCT namespace FROM kb_documents"
+            ).fetchall()
+            return [r[0] for r in rows]
+        except Exception as e:
+            print(f"[sqlite] list_kb_namespaces 失败: {e}")
+            return []
+
+    def find_kb_namespace_by_doc(self, doc_id: str) -> str | None:
+        """根据 doc_id 查找其所在的 namespace"""
+        if not self.is_enabled:
+            return None
+        try:
+            row = self._conn.execute(
+                "SELECT namespace FROM kb_documents WHERE doc_id = ? LIMIT 1", [doc_id],
+            ).fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            print(f"[sqlite] find_kb_namespace_by_doc 失败: {e}")
+            return None
 
     def get_kb_stats(self, namespace: str) -> dict[str, int]:
         if not self.is_enabled:

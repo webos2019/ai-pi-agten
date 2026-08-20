@@ -421,6 +421,11 @@ _CN_EN_MAP = {
 }
 
 
+def _is_literature_query(query: str) -> bool:
+    """检测是否为古籍/文学类查询"""
+    return any(kw in query for kw in _LITERATURE_KEYWORDS)
+
+
 def _generate_query_variants(query: str) -> list[str]:
     """从用户原始查询生成多个搜索查询变体
 
@@ -429,7 +434,7 @@ def _generate_query_variants(query: str) -> list[str]:
     2. 去除疑问词的精简版
     3. 提取核心实体 + 上下文词（简介/百科/详解）
     4. 英文翻译版（如果检测到可翻译术语）
-    5. 拆分子问题
+    5. 古籍/文学查询 → 追加 site:ctext.org / site:gushiwen.cn 站点搜索
 
     返回去重后的变体列表（最多 4 个）
     """

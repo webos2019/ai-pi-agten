@@ -54,6 +54,9 @@ MAX_TOOL_CALLS = 8  # 支持 3-4 次搜索 + 2-3 次 web_fetch 的多轮搜索�
 MAX_RETRY_ATTEMPTS = 3
 RETRY_DELAY_S = 2.0
 
+# 连续空搜索结果的最大次数 — 超过则强制停止，防止死循环
+MAX_CONSECUTIVE_EMPTY_SEARCHES = 2
+
 # ─── /refine 命令 ─────────────────────────────────────
 
 REFINE_SYSTEM_PROMPT = """你是一个持续化框架改进助手。分析当前对话轨迹，提取有证据支撑的教训。
@@ -464,13 +467,14 @@ async def _do_orchestrate(
             for s in steers
         ]
 
-    # 如果工具列表中包含子代理工具，增大 tool_timeout
+    # 如果工具列表中包含子代理工具或文件下载工具，增大 tool_timeout
     has_sub_agent = any(t.name == "delegate_sub_agent" for t in tool_defs)
+    has_file_download = any(t.name == "file_download" for t in tool_defs)
     config = AgentLoopConfig(
         stream_fn=stream_fn,
         should_stop_after_turn=should_stop,
         get_steering_messages=get_steering_messages,
-        tool_timeout=120.0 if has_sub_agent else 30.0,
+        tool_timeout=120.0 if (has_sub_agent or has_file_download) else 30.0,
     )
 
     # 5. 构建 emit 回调 — 实时把 AgentEvent 转为 NDJSON chunk
@@ -488,6 +492,21 @@ async def _do_orchestrate(
             completion_tokens=token_usage["completion"],
             total_tokens=token_usage["total"],
         ))
+
+        # ── 服务端持久化 token 用量 (跨设备/跨浏览器统计) ──
+        try:
+            from token_store import get_token_store
+            get_token_store().record_usage(
+                prompt_tokens=token_usage["prompt"],
+                completion_tokens=token_usage["completion"],
+                total_tokens=token_usage["total"],
+                session_id=llm_session_id,
+                conversation_id=context.get("conversation_id", ""),
+                model="deepseek-chat",
+            )
+        except Exception:
+            # token 记录失败不影响对话
+            pass
 
     lifecycle.emit_done_once()
 
@@ -755,6 +774,7 @@ def _check_should_stop(
     停止条件:
     1. 工具调用总数超过 MAX_TOOL_CALLS
     2. tool-first policy: 有 authoritative result 时直接输出并停止
+    3. 连续空搜索结果超过 MAX_CONSECUTIVE_EMPTY_SEARCHES → 停止防止死循环
     """
     if not tool_results:
         return False
@@ -766,6 +786,25 @@ def _check_should_stop(
     if tool_call_tracker["count"] >= MAX_TOOL_CALLS:
         return True
 
+    # ── 检测连续空搜索结果 → 防止死循环 ──
+    # 当 web_search 返回空结果（或结果列表为空）时，LLM 会在 skill 系统提示的
+    # 要求下不断换关键词重试。如果连续 MAX_CONSECUTIVE_EMPTY_SEARCHES 次都搜不到，
+    # 说明确实搜不到，强制停止让 LLM 直接回答。
+    for tr in tool_results:
+        if tr.tool_name == "web_search":
+            is_empty = _is_search_result_empty(tr.result)
+            if is_empty:
+                tool_call_tracker["consecutive_empty_searches"] = \
+                    tool_call_tracker.get("consecutive_empty_searches", 0) + 1
+                if tool_call_tracker["consecutive_empty_searches"] >= MAX_CONSECUTIVE_EMPTY_SEARCHES:
+                    lifecycle.write_chunk(create_text_chunk(
+                        "\n\n⚠️ 已多次搜索未找到相关结果，将直接基于已有信息回答。\n"
+                    ))
+                    return True
+            else:
+                # 搜索有结果 → 重置计数器
+                tool_call_tracker["consecutive_empty_searches"] = 0
+
     # tool-first policy: 有 authoritative result → 直接输出工具结果并停止
     if result_policy == "tool-first":
         for tr in tool_results:
@@ -776,6 +815,26 @@ def _check_should_stop(
                 return True
 
     return False
+
+
+def _is_search_result_empty(result_str: str) -> bool:
+    """检测 web_search 的返回结果是否为空或无有效内容"""
+    try:
+        data = json.loads(result_str)
+        # 结果列表为空
+        results = data.get("results", [])
+        if not results:
+            return True
+        # 有明确的 "未找到" 消息
+        msg = data.get("message", "")
+        if msg and "未找到" in msg:
+            return True
+        # 有 error 字段
+        if data.get("error"):
+            return True
+        return False
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 # ─── 错误恢复回退 ──────────────────────────────────────

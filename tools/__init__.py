@@ -23,6 +23,7 @@ from .service_check import register as register_service_check
 from .log_search import register as register_log_search
 from .system_monitor import register as register_system_monitor
 from .db_diagnose import register as register_db_diagnose
+from .file_download import register as register_file_download
 
 from tool_registry import tool_registry
 from skill_registry import skill_registry
@@ -54,6 +55,7 @@ def register_all_tools():
     register_log_search()
     register_system_monitor()
     register_db_diagnose()
+    register_file_download()
 
     # ── 技能 ──（文件化懒加载，借鉴 Pi progressive disclosure）
     # 启动时只扫描 skills/ 目录建立 id→filepath 索引，不加载 system_prompt 内容；

@@ -65,6 +65,7 @@ const VoiceChat: React.FC = () => {
     const audioRef = useRef<HTMLAudioElement | null>(null)
     const messagesEndRef = useRef<HTMLDivElement | null>(null)
     const sendMsgRef = useRef<(text: string) => void>(() => {})
+    const abortRef = useRef<AbortController | null>(null)  // 中止流式请求
 
     // ─── 挂载时加载已有对话历史 ───
     useEffect(() => {
@@ -284,10 +285,15 @@ const VoiceChat: React.FC = () => {
                 requestBody.conversationId = convId
             }
 
+            // 创建 AbortController 以支持中途停止
+            const controller = new AbortController()
+            abortRef.current = controller
+
             const resp = await fetch('/api/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(requestBody),
+                signal: controller.signal,
             })
 
             if (!resp.ok) {
@@ -352,18 +358,29 @@ const VoiceChat: React.FC = () => {
                 }
             }
 
-            // 完成 — 自动播放语音
+            // 完成 — 清理 abortRef
+            abortRef.current = null
             setThinking(false)
             if (autoSpeak && fullText) {
                 synthesize(fullText)
             }
         } catch (e) {
+            abortRef.current = null
             setThinking(false)
-            setMessages(prev => prev.map((m, i) =>
-                i === prev.length - 1
-                    ? { ...m, content: '❌ 请求失败: ' + (e as Error).message, loading: false }
-                    : m
-            ))
+            // 用户主动中止 — 不显示错误
+            if ((e as Error).name === 'AbortError') {
+                setMessages(prev => prev.map((m, i) =>
+                    i === prev.length - 1
+                        ? { ...m, loading: false }
+                        : m
+                ))
+            } else {
+                setMessages(prev => prev.map((m, i) =>
+                    i === prev.length - 1
+                        ? { ...m, content: '❌ 请求失败: ' + (e as Error).message, loading: false }
+                        : m
+                ))
+            }
         }
     }, [autoSpeak, voice, rate, voiceSessionId, voiceConversationId])
 
@@ -482,6 +499,25 @@ const VoiceChat: React.FC = () => {
             audioRef.current.pause()
             setSpeaking(false)
         }
+    }, [])
+
+    // ─── 停止生成 (中止流式请求 + 停止 TTS) ───
+    const stopGenerating = useCallback(() => {
+        // 中止正在进行的 fetch 流式请求
+        if (abortRef.current) {
+            abortRef.current.abort()
+            abortRef.current = null
+        }
+        setThinking(false)
+        // 停止 TTS 播放
+        if (audioRef.current) {
+            audioRef.current.pause()
+            setSpeaking(false)
+        }
+        // 清除最后一条消息的 loading 状态
+        setMessages(prev => prev.map((m, i) =>
+            i === prev.length - 1 ? { ...m, loading: false } : m
+        ))
     }, [])
 
     // ─── 开始新对话 (清空当前对话状态) ───
@@ -665,8 +701,12 @@ const VoiceChat: React.FC = () => {
                     onKeyDown={e => { if (e.key === 'Enter') handleManualSend() }}
                 />
 
-                {speaking ? (
-                    <button className="voicechat-stop-btn" onClick={stopSpeaking} title="停止播放">
+                {(speaking || thinking) ? (
+                    <button
+                        className="voicechat-stop-btn"
+                        onClick={thinking ? stopGenerating : stopSpeaking}
+                        title={thinking ? '停止生成' : '停止播放'}
+                    >
                         <span className="voicechat-stop-icon">⏹</span>
                     </button>
                 ) : null}

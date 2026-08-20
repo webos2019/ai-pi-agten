@@ -300,6 +300,7 @@ class Conversation:
     title: str = "新对话"
     last_active_at: float = field(default_factory=time.time)
     has_messages: bool = False  # 是否已有消息 (区分草稿)
+    hidden: bool = False  # 是否隐藏 (不显示在列表中，但数据保留)
 
     def to_dto(self) -> dict[str, Any]:
         return {
@@ -307,6 +308,7 @@ class Conversation:
             "title": self.title,
             "lastActiveAt": self.last_active_at,
             "hasMessages": self.has_messages,
+            "hidden": self.hidden,
         }
 
 
@@ -318,9 +320,10 @@ class ConversationRegistry:
     selected_conversation_id: str = ""
     _persistence: DuckDBPersistence | None = field(default=None, repr=False)
 
-    def list_conversations(self) -> list[Conversation]:
-        """按 last_active_at 倒序返回"""
-        return sorted(self.conversations, key=lambda c: c.last_active_at, reverse=True)
+    def list_conversations(self, include_hidden: bool = False) -> list[Conversation]:
+        """按 last_active_at 倒序返回 (默认不返回隐藏会话)"""
+        convs = [c for c in self.conversations if include_hidden or not c.hidden]
+        return sorted(convs, key=lambda c: c.last_active_at, reverse=True)
 
     def get(self, conversation_id: str) -> Conversation | None:
         for c in self.conversations:
@@ -364,6 +367,20 @@ class ConversationRegistry:
         self._persist_conversation(conv)
         return True
 
+    def set_hidden(self, conversation_id: str, hidden: bool) -> bool:
+        """隐藏/取消隐藏会话"""
+        conv = self.get(conversation_id)
+        if not conv:
+            return False
+        conv.hidden = hidden
+        self._persist_conversation(conv)
+        # 如果隐藏的是当前选中会话，切换到第一个非隐藏会话
+        if hidden and self.selected_conversation_id == conversation_id:
+            visible = [c for c in self.conversations if not c.hidden]
+            self.selected_conversation_id = visible[0].conversation_id if visible else ""
+            self._persist_session_registry()
+        return True
+
     def delete(self, conversation_id: str) -> str | None:
         """删除会话，返回被删除的 thread_id (供清理 ThreadState)"""
         conv = self.get(conversation_id)
@@ -403,6 +420,7 @@ class ConversationRegistry:
             title=conv.title,
             last_active_at=conv.last_active_at,
             has_messages=conv.has_messages,
+            hidden=conv.hidden,
         )
 
     def _persist_session_registry(self) -> None:
@@ -414,11 +432,11 @@ class ConversationRegistry:
             selected_conversation_id=self.selected_conversation_id,
         )
 
-    def to_dto(self) -> dict[str, Any]:
+    def to_dto(self, include_hidden: bool = False) -> dict[str, Any]:
         return {
             "sessionId": self.session_id,
             "selectedConversationId": self.selected_conversation_id,
-            "conversations": [c.to_dto() for c in self.list_conversations()],
+            "conversations": [c.to_dto() for c in self.list_conversations(include_hidden=include_hidden)],
         }
 
 
@@ -465,6 +483,7 @@ class SessionStore:
                     title=conv_data.get("title", "新对话"),
                     last_active_at=conv_data.get("last_active_at", time.time()),
                     has_messages=conv_data.get("has_messages", False),
+                    hidden=conv_data.get("hidden", False),
                 )
                 registry.conversations.append(conv)
 

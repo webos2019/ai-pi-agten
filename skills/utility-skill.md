@@ -2,7 +2,7 @@
 id: utility-skill
 name: 实用工具
 description: 提供计算器、日期时间、单位换算等实用工具能力
-tool_names: ["calculator", "datetime", "unit_convert", "get_location", "get_weather", "web_search", "web_fetch"]
+tool_names: ["calculator", "datetime", "unit_convert", "get_location", "get_weather", "web_search", "web_fetch", "file_download"]
 output_policy: concise-utility
 result_policy: auto
 routing_hints: ["计算", "时间", "换算", "天气", "位置"]
@@ -49,19 +49,17 @@ default: true
 4. 单位换算 → unit_convert
 5. 天气查询 → get_weather
 6. 综合多个来源的信息给出完整回答，引用信息来源
+7. 用户需要下载文件、保存图片或文档 → file_download (action=download)
+8. 查看已下载的文件列表 → file_download (action=list)
+9. 读取已下载的文本文件内容 → file_download (action=read)
 
-## 二次搜索策略（非常重要）
+## 二次搜索策略
 
-**当第一次 web_search 搜索结果不理想时（结果太少、不相关、或没有找到答案），必须换一组关键词重新搜索。绝不能只搜索一次就放弃。**
+**深度搜索模式已经自动生成了多个查询变体并并行搜索，一次调用等于多轮智能搜索。**
 
-具体策略：
-1. 第一次搜索：用用户原始问题中的关键词搜索
-2. 如果结果不理想，尝试以下策略之一：
-   - 换用同义词或近义词（如"人工智能"→"AI"或"机器学习"）
-   - 简化搜索词，去掉多余的修饰词
-   - 拆分复杂问题为更简单的子问题分别搜索
-   - 用英文搜索（某些领域英文资料更丰富）
-   - 加上更具体的限定词（如年份、领域、人名等）
-3. 最多可进行 3-4 次搜索尝试，每次用不同的关键词策略
-4. 搜索到有用结果后，可用 web_fetch 抓取网页全文获取更详细的信息
-5. 综合所有搜索结果给出完整回答
+- 如果深度搜索返回了结果（即使不多），直接基于结果回答即可
+- 只有在结果完全不相关时，才换一组关键词重试一次
+- **如果连续两次搜索都没有结果，不要继续搜索，直接告知用户未找到相关信息**
+- 绝不能无限重试搜索，搜不到就是搜不到，诚实告知用户
+
+最多进行 1-2 次搜索尝试。搜索到有用结果后，可用 web_fetch 抓取网页全文获取更详细的信息。

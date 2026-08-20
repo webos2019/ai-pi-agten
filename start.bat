@@ -73,7 +73,7 @@ echo.
 
 if "%FRONTEND_MODE%"=="production" (
     echo   模式: 生产模式 (后端托管前端静态文件)
-    echo   地址: http://localhost:8000
+    echo   地址: http://localhost:8089
     echo.
     echo   按 Ctrl+C 停止服务
     echo ============================================
@@ -85,7 +85,7 @@ if "%FRONTEND_MODE%"=="production" (
 if "%FRONTEND_MODE%"=="dev" (
     echo   模式: 开发模式 (前后端分离热更新)
     echo   前端: http://localhost:3000
-    echo   后端: http://localhost:8000
+    echo   后端: http://localhost:8089
     echo.
     echo   正在启动后端 (新窗口)...
     start "Pi Agent Backend" cmd /k "cd /d c:\newtask-pi && python app.py"
@@ -105,8 +105,8 @@ if "%FRONTEND_MODE%"=="dev" (
 
 if "%FRONTEND_MODE%"=="backend_only" (
     echo   模式: 纯后端模式 (无前端界面)
-    echo   地址: http://localhost:8000
-    echo   API 文档: http://localhost:8000/docs
+    echo   地址: http://localhost:8089
+    echo   API 文档: http://localhost:8089/docs
     echo.
     echo   按 Ctrl+C 停止服务
     echo ============================================

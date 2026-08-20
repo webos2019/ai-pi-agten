@@ -9,8 +9,8 @@ interface Props {
     tokenUsage: { prompt: number; completion: number; total: number }
     todayTokens?: number
     dailyTokenLimit?: number
-    view?: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb'
-    onSetView?: (view: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb') => void
+    view?: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents'
+    onSetView?: (view: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents') => void
     onOpenSettings?: () => void
     llmModel?: string
     llmHasKey?: boolean
@@ -41,7 +41,36 @@ const Header: React.FC<Props> = ({
     const [editingName, setEditingName] = useState('')
     const [creatingWs, setCreatingWs] = useState(false)
     const [newWsName, setNewWsName] = useState('')
+    const [restarting, setRestarting] = useState(false)
     const wsDropdownRef = useRef<HTMLDivElement>(null)
+
+    const handleRestart = async () => {
+        if (restarting) return
+        if (!confirm('确定要重启后端服务吗？重启期间将短暂无法访问。')) return
+        setRestarting(true)
+        try {
+            await fetch('/api/restart', { method: 'POST' })
+            // 等待服务重启完成，轮询健康检查
+            let ok = false
+            for (let i = 0; i < 15; i++) {
+                await new Promise(r => setTimeout(r, 1000))
+                try {
+                    const resp = await fetch('/api/health', { signal: AbortSignal.timeout(2000) })
+                    if (resp.ok) { ok = true; break }
+                } catch { /* 继续等待 */ }
+            }
+            if (ok) {
+                alert('✅ 服务重启成功！')
+                window.location.reload()
+            } else {
+                alert('⚠️ 服务重启中，请稍后手动刷新页面')
+            }
+        } catch (e) {
+            alert('❌ 重启失败: ' + (e as Error).message)
+        } finally {
+            setRestarting(false)
+        }
+    }
 
     // 点击外部关闭下拉
     useEffect(() => {
@@ -67,6 +96,10 @@ const Header: React.FC<Props> = ({
         ? 'OpsPilot · 多Agent AIOps 协作流水线'
         : view === 'voice'
         ? '语音对话 · 微软 TTS 语音合成 + 实时语音识别'
+        : view === 'files'
+        ? '文件管理 · 下载存储 · 文件浏览'
+        : view === 'agents'
+        ? 'Agent 管理 · Worker/Team/Project 编排'
         : mode === 'utility-skill' ? '实用工具模式 · 工具调用 + 流式输出' : '文件与天气模式 · 本地读取 + 实时查询'
 
     const handleCreateWs = () => {
@@ -213,6 +246,18 @@ const Header: React.FC<Props> = ({
                 )}
             </div>
             <div className="flex items-center gap-1.5 sm:gap-2 relative z-10">
+                {/* 重启服务按钮 */}
+                <button
+                    className={`action-btn flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs ${restarting ? 'opacity-50 pointer-events-none' : ''}`}
+                    onClick={handleRestart}
+                    title={restarting ? '正在重启...' : '重启后端服务'}
+                    disabled={restarting}
+                >
+                    <svg className="icon h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={restarting ? { animation: 'spin 1s linear infinite' } : undefined}>
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    {restarting && <span>重启中</span>}
+                </button>
                 {/* LLM 设置按钮 */}
                 {onOpenSettings && (
                     <button
@@ -237,7 +282,7 @@ const Header: React.FC<Props> = ({
                         <span className="token-badge-value">{tokenUsage.total.toLocaleString()}</span>
                     </div>
                 )}
-                {/* 今日 Token 花费进度条 */}
+                {/* 今日 Token 花费进度条 — 所有视图都可见 */}
                 {todayTokens > 0 && (
                     <div
                         className="token-bar-badge"
@@ -287,6 +332,14 @@ const Header: React.FC<Props> = ({
                             className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'kb' ? 'active' : ''}`}
                             onClick={() => onSetView('kb')}
                         >知识库</button>
+                        <button
+                            className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'files' ? 'active' : ''}`}
+                            onClick={() => onSetView('files')}
+                        >文件</button>
+                        <button
+                            className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'agents' ? 'active' : ''}`}
+                            onClick={() => onSetView('agents')}
+                        >Agent</button>
                         <button
                             className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'voice' ? 'active' : ''}`}
                             onClick={() => onSetView('voice')}

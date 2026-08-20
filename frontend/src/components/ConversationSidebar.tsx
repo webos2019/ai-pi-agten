@@ -7,11 +7,15 @@ interface Props {
     isDraft: boolean
     disabled: boolean
     collapsed: boolean
+    showHidden: boolean
     onToggleCollapse: () => void
     onNewChat: () => void
     onSelect: (conversationId: string) => void
     onDelete: (conversationId: string) => void
     onRename: (conversationId: string, title: string) => void
+    onHide: (conversationId: string) => void
+    onUnhide: (conversationId: string) => void
+    onToggleShowHidden: () => void
 }
 
 function formatTime(ts: number): string {
@@ -23,8 +27,9 @@ function formatTime(ts: number): string {
 }
 
 const ConversationSidebar: React.FC<Props> = ({
-    conversations, selectedId, isDraft, disabled, collapsed,
+    conversations, selectedId, isDraft, disabled, collapsed, showHidden,
     onToggleCollapse, onNewChat, onSelect, onDelete, onRename,
+    onHide, onUnhide, onToggleShowHidden,
 }) => {
     const [editingId, setEditingId] = useState('')
     const [editText, setEditText] = useState('')
@@ -155,6 +160,29 @@ const ConversationSidebar: React.FC<Props> = ({
                                                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                                                         </svg>
                                                     </button>
+                                                    {conv.hidden ? (
+                                                        // 已隐藏 → 显示取消隐藏按钮
+                                                        <button
+                                                            className="flex h-5 w-5 items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--cyan)]"
+                                                            onClick={(e) => { e.stopPropagation(); onUnhide(conv.conversationId) }}
+                                                            title="取消隐藏"
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="11" height="11">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5s8.268 2.943 9.542 7c-1.274 4.057-5.065 7-9.542 7s-8.268-2.943-9.542-7z" />
+                                                            </svg>
+                                                        </button>
+                                                    ) : (
+                                                        // 未隐藏 → 显示隐藏按钮
+                                                        <button
+                                                            className="flex h-5 w-5 items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--amber)]"
+                                                            onClick={(e) => { e.stopPropagation(); onHide(conv.conversationId) }}
+                                                            title="隐藏"
+                                                        >
+                                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="11" height="11">
+                                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.379-1.09c.275-.082.567-.122.861-.122A3 3 0 0116 9.5m2.93 2.93c.39-.39.93-.93 1.46-1.47M3 3l18 18" />
+                                                            </svg>
+                                                        </button>
+                                                    )}
                                                     <button
                                                         className="flex h-5 w-5 items-center justify-center rounded text-[var(--text-muted)] hover:text-[var(--red-err)]"
                                                         onClick={(e) => { e.stopPropagation(); setConfirmDeleteId(conv.conversationId) }}
@@ -179,8 +207,19 @@ const ConversationSidebar: React.FC<Props> = ({
             </div>
 
             {/* 底部 */}
-            <div className="border-t border-[var(--cyan-border)] px-3 py-2 text-[10px] text-[var(--text-muted)]">
-                最多保留 10 个会话
+            <div className="flex items-center justify-between border-t border-[var(--cyan-border)] px-3 py-2">
+                <span className="text-[10px] text-[var(--text-muted)]">最多保留 10 个会话</span>
+                <button
+                    className={`text-[10px] transition-colors ${
+                        showHidden
+                            ? 'text-[var(--cyan)]'
+                            : 'text-[var(--text-muted)] hover:text-[var(--cyan)]'
+                    }`}
+                    onClick={onToggleShowHidden}
+                    title={showHidden ? '隐藏已归档的会话' : '显示已归档的会话'}
+                >
+                    {showHidden ? '◉ 隐藏归档' : '○ 显示归档'}
+                </button>
             </div>
 
             {/* 删除确认弹窗 */}

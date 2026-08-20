@@ -2,7 +2,7 @@
 id: web-skill
 name: 网络研究
 description: 提供全面的互联网信息获取能力，包括网络搜索、网页抓取、GitHub 仓库分析、YouTube 视频分析和 PDF 文档提取
-tool_names: ["web_search", "web_fetch", "github_repo", "youtube_analyze", "pdf_extract", "delegate_sub_agent"]
+tool_names: ["web_search", "web_fetch", "github_repo", "youtube_analyze", "pdf_extract", "delegate_sub_agent", "file_download"]
 output_policy: detailed-explanation
 result_policy: auto
 routing_hints: ["搜索", "网络", "网页", "GitHub", "YouTube", "视频", "PDF", "论文", "研究", "查找资料"]

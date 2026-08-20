@@ -81,6 +81,18 @@ class KnowledgeDocument:
 
     def to_dto(self) -> dict[str, Any]:
         return {
+            "doc_id": self.doc_id,
+            "title": self.title,
+            "source_type": self.source_type,
+            "source_path": self.source_path,
+            "chunk_count": self.chunk_count,
+            "char_count": self.char_count,
+            "created_at": self.created_at,
+        }
+
+    def to_api(self) -> dict[str, Any]:
+        """前端 API 格式 (camelCase)"""
+        return {
             "docId": self.doc_id,
             "title": self.title,
             "sourceType": self.source_type,
@@ -364,6 +376,61 @@ class KnowledgeBaseStore:
         """列出 namespace 下所有文档"""
         docs = self._get_docs_namespace(namespace)
         return sorted(docs.values(), key=lambda d: d.created_at, reverse=True)
+
+    def list_all_documents(self) -> list[tuple[str, KnowledgeDocument]]:
+        """列出所有 namespace 下的所有文档
+        
+        返回: [(namespace, document), ...] 按 created_at 降序
+        用于知识库管理页面跨工作区展示全部文档。
+        """
+        result: list[tuple[str, KnowledgeDocument]] = []
+        # 触发所有 namespace 从 DB 加载
+        if self._persistence and self._persistence.is_enabled:
+            all_ns = self._persistence.list_kb_namespaces()
+            for ns in all_ns:
+                self._get_chunks_namespace(ns)  # 触发加载
+                self._get_docs_namespace(ns)
+        for ns, docs in self._docs.items():
+            for doc in docs.values():
+                result.append((ns, doc))
+        result.sort(key=lambda x: x[1].created_at, reverse=True)
+        return result
+
+    # ─── 获取文档分块内容 ─────────────────────────────
+
+    def get_document_chunks(self, namespace: str, doc_id: str) -> list[KnowledgeChunk]:
+        """获取指定文档的所有分块（按 chunk_index 排序）"""
+        ns = self._get_chunks_namespace(namespace)
+        chunks = [c for c in ns.values() if c.doc_id == doc_id]
+        chunks.sort(key=lambda c: c.chunk_index)
+        return chunks
+
+    def get_document_chunks_cross_ns(self, doc_id: str) -> list[KnowledgeChunk]:
+        """跨 namespace 获取文档分块（用于管理页面按 doc_id 查看）"""
+        # 先从 DB 查找 doc_id 所在的 namespace
+        if self._persistence and self._persistence.is_enabled:
+            ns = self._persistence.find_kb_namespace_by_doc(doc_id)
+            if ns:
+                return self.get_document_chunks(ns, doc_id)
+        # 降级: 遍历内存中所有 namespace
+        for ns in self._namespaces:
+            chunks = self.get_document_chunks(ns, doc_id)
+            if chunks:
+                return chunks
+        return []
+
+    def delete_document_cross_ns(self, doc_id: str) -> bool:
+        """跨 namespace 删除文档"""
+        # 先从 DB 查找 doc_id 所在的 namespace
+        if self._persistence and self._persistence.is_enabled:
+            ns = self._persistence.find_kb_namespace_by_doc(doc_id)
+            if ns:
+                return self.delete_document(ns, doc_id)
+        # 降级: 遍历内存
+        for ns in list(self._docs.keys()):
+            if self.delete_document(ns, doc_id):
+                return True
+        return False
 
     # ─── 删除文档 ─────────────────────────────────────
 

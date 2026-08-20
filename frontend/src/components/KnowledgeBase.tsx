@@ -18,6 +18,11 @@ interface KBSearchResult {
     score: number
 }
 
+interface KBChunk {
+    chunkIndex: number
+    text: string
+}
+
 interface Props {
     sessionId: string
 }
@@ -38,15 +43,20 @@ const KnowledgeBase: React.FC<Props> = ({ sessionId }) => {
     const [searchResults, setSearchResults] = useState<KBSearchResult[]>([])
     const [searching, setSearching] = useState(false)
 
+    // 查看文档内容
+    const [viewingDoc, setViewingDoc] = useState<KBDocument | null>(null)
+    const [docChunks, setDocChunks] = useState<KBChunk[]>([])
+    const [loadingChunks, setLoadingChunks] = useState(false)
+
     // 加载文档列表
     const loadDocuments = useCallback(async () => {
-        if (!sessionId) return
         try {
-            const resp = await fetch(`/api/kb/documents?session_id=${sessionId}`)
+            // 不传 session_id → 返回所有工作区的文档
+            const resp = await fetch('/api/kb/documents')
             const data = await resp.json()
             if (data.documents) setDocuments(data.documents)
         } catch { /* ignore */ }
-    }, [sessionId])
+    }, [])
 
     useEffect(() => {
         loadDocuments()
@@ -91,9 +101,8 @@ const KnowledgeBase: React.FC<Props> = ({ sessionId }) => {
 
     // 删除文档
     const handleDelete = async (docId: string) => {
-        if (!sessionId) return
         try {
-            await fetch(`/api/kb/documents/${docId}?session_id=${sessionId}`, { method: 'DELETE' })
+            await fetch(`/api/kb/documents/${docId}`, { method: 'DELETE' })
             await loadDocuments()
         } catch { /* ignore */ }
     }
@@ -112,6 +121,24 @@ const KnowledgeBase: React.FC<Props> = ({ sessionId }) => {
             setSearchResults(data.results || [])
         } catch { /* ignore */ }
         finally { setSearching(false) }
+    }
+
+    // 查看文档内容
+    const handleViewDoc = async (doc: KBDocument) => {
+        setViewingDoc(doc)
+        setDocChunks([])
+        setLoadingChunks(true)
+        try {
+            const resp = await fetch(`/api/kb/documents/${doc.docId}/chunks`)
+            const data = await resp.json()
+            if (data.chunks) setDocChunks(data.chunks)
+        } catch { /* ignore */ }
+        finally { setLoadingChunks(false) }
+    }
+
+    const handleCloseViewer = () => {
+        setViewingDoc(null)
+        setDocChunks([])
     }
 
     const sourceIcon = (type: string) => {
@@ -193,13 +220,23 @@ const KnowledgeBase: React.FC<Props> = ({ sessionId }) => {
                     <div className="kb-doc-list">
                         {documents.map(doc => (
                             <div key={doc.docId} className="kb-doc-item">
-                                <div className="kb-doc-icon">{sourceIcon(doc.sourceType)}</div>
-                                <div className="kb-doc-info">
+                                <div className="kb-doc-icon" onClick={() => handleViewDoc(doc)} style={{ cursor: 'pointer' }}>{sourceIcon(doc.sourceType)}</div>
+                                <div className="kb-doc-info" onClick={() => handleViewDoc(doc)} style={{ cursor: 'pointer' }}>
                                     <div className="kb-doc-name">{doc.title}</div>
                                     <div className="kb-doc-meta">
                                         {doc.chunkCount} 块 · {doc.charCount} 字 · {doc.sourceType}
                                     </div>
                                 </div>
+                                <button
+                                    className="kb-doc-view-btn"
+                                    onClick={() => handleViewDoc(doc)}
+                                    title="查看内容"
+                                >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                                        <circle cx="12" cy="12" r="3"/>
+                                    </svg>
+                                </button>
                                 <button
                                     className="kb-doc-delete"
                                     onClick={() => handleDelete(doc.docId)}
@@ -248,6 +285,37 @@ const KnowledgeBase: React.FC<Props> = ({ sessionId }) => {
                     <div className="kb-empty">无匹配结果</div>
                 )}
             </div>
+
+            {/* 文档内容查看器 */}
+            {viewingDoc && (
+                <div className="kb-doc-viewer-overlay" onClick={handleCloseViewer}>
+                    <div className="kb-doc-viewer" onClick={e => e.stopPropagation()}>
+                        <div className="kb-doc-viewer-header">
+                            <div className="kb-doc-viewer-title">
+                                {sourceIcon(viewingDoc.sourceType)} {viewingDoc.title}
+                            </div>
+                            <button className="kb-doc-viewer-close" onClick={handleCloseViewer} title="关闭">✕</button>
+                        </div>
+                        <div className="kb-doc-viewer-meta">
+                            {viewingDoc.chunkCount} 块 · {viewingDoc.charCount} 字 · {viewingDoc.sourceType}
+                        </div>
+                        <div className="kb-doc-viewer-body">
+                            {loadingChunks ? (
+                                <div className="kb-doc-viewer-loading">加载中...</div>
+                            ) : docChunks.length === 0 ? (
+                                <div className="kb-doc-viewer-empty">文档无内容</div>
+                            ) : (
+                                docChunks.map((chunk, i) => (
+                                    <div key={i} className="kb-chunk-block">
+                                        <div className="kb-chunk-index">片段 {chunk.chunkIndex + 1}</div>
+                                        <div className="kb-chunk-text">{chunk.text}</div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }

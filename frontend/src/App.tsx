@@ -10,6 +10,8 @@ import OpsPilotDemo from './components/OpsPilotDemo'
 import VoiceChat from './components/VoiceChat'
 import SettingsPanel from './components/SettingsPanel'
 import KnowledgeBase from './components/KnowledgeBase'
+import FileManager from './components/FileManager'
+import AgentManager from './components/AgentManager'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { useInputHistory } from './hooks/useInputHistory'
@@ -17,7 +19,7 @@ import { slashCommands, atReferences } from './types'
 import type { UploadedFile, StructuredRequest, AtReference } from './types'
 
 export default function App() {
-    const [view, setView] = useState<'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb'>('chat')
+    const [view, setView] = useState<'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents'>('chat')
     const [mode, setMode] = useState('utility-skill')
     const [clientIP, setClientIP] = useState<string | null>(null)
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
@@ -124,10 +126,11 @@ export default function App() {
         total: chat.tokenUsage.total + voiceTokenUsage.total,
     }
 
-    // ─── 今日 Token 花费追踪 (localStorage 按日期持久化) ────
+    // ─── 今日 Token 花费追踪 (服务端为主 + localStorage 离线降级) ────
     const DAILY_TOKEN_LIMIT = 500000 // 每日 500k 上限
     const todayKey = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
     const [todayTokens, setTodayTokens] = useState<number>(() => {
+        // 初始值: 先从 localStorage 快速恢复 (离线降级)
         try {
             const raw = localStorage.getItem('pi_token_today')
             if (raw) {
@@ -138,9 +141,31 @@ export default function App() {
         return 0
     })
     const prevTotalRef = useRef(0) // 用于计算增量
+    const serverSyncedRef = useRef(false) // 服务端数据是否已同步
+
+    // 页面加载时从服务端获取今日 token 用量
+    useEffect(() => {
+        fetch('/api/token-usage/today')
+            .then(r => r.json())
+            .then(data => {
+                if (data && typeof data.totalTokens === 'number') {
+                    setTodayTokens(data.totalTokens)
+                    serverSyncedRef.current = true
+                    // 同步到 localStorage
+                    try {
+                        localStorage.setItem('pi_token_today', JSON.stringify({ date: todayKey, total: data.totalTokens }))
+                    } catch {}
+                }
+            })
+            .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [])
+
+    // 每次对话完成后 (token 总量增加)，从服务端刷新今日统计
     useEffect(() => {
         const delta = combinedTokenUsage.total - prevTotalRef.current
         if (delta > 0) {
+            // 先用增量乐观更新本地 UI
             setTodayTokens(prev => {
                 const next = prev + delta
                 try {
@@ -148,6 +173,18 @@ export default function App() {
                 } catch {}
                 return next
             })
+            // 异步从服务端校准 (确保跨设备一致性)
+            fetch('/api/token-usage/today')
+                .then(r => r.json())
+                .then(data => {
+                    if (data && typeof data.totalTokens === 'number') {
+                        setTodayTokens(data.totalTokens)
+                        try {
+                            localStorage.setItem('pi_token_today', JSON.stringify({ date: todayKey, total: data.totalTokens }))
+                        } catch {}
+                    }
+                })
+                .catch(() => {})
         }
         prevTotalRef.current = combinedTokenUsage.total
     }, [combinedTokenUsage.total, todayKey])
@@ -330,11 +367,15 @@ export default function App() {
                 isDraft={conversations.isDraft}
                 disabled={chat.isStreaming}
                 collapsed={sidebarCollapsed}
+                showHidden={conversations.showHidden}
                 onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
                 onNewChat={handleNewChat}
                 onSelect={handleSelectConversation}
                 onDelete={handleDeleteConversation}
                 onRename={conversations.renameConversation}
+                onHide={conversations.hideConversation}
+                onUnhide={conversations.unhideConversation}
+                onToggleShowHidden={conversations.toggleShowHidden}
             />
 
             {/* 右侧主区域 */}
@@ -395,6 +436,14 @@ export default function App() {
                 ) : view === 'kb' ? (
                     <div className="flex-1 overflow-auto kb-view-container">
                         <KnowledgeBase sessionId={conversations.sessionId} />
+                    </div>
+                ) : view === 'files' ? (
+                    <div className="flex-1 overflow-auto files-view-container">
+                        <FileManager />
+                    </div>
+                ) : view === 'agents' ? (
+                    <div className="flex-1 overflow-auto agents-view-container">
+                        <AgentManager />
                     </div>
                 ) : (
                     <>
