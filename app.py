@@ -388,14 +388,14 @@ async def health():
 
 @app.post("/api/restart")
 async def restart_server():
-    """重启后端服务 — 触发进程退出，由守护脚本自动重启"""
-    import threading, os, signal
+    """重启后端服务 — 触发进程退出，由守护脚本(start.bat)自动重启"""
+    import threading, os
 
     def _delayed_restart():
         import time
         time.sleep(1)  # 等响应返回客户端
-        # 发送 SIGTERM 给自己，守护脚本会自动重启
-        os.kill(os.getpid(), signal.SIGTERM)
+        # 退出码 1000 表示"重启信号"，start.bat 检测到后自动重启
+        os._exit(1000)
 
     threading.Thread(target=_delayed_restart, daemon=True).start()
     return {"status": "ok", "message": "服务将在 1 秒后重启，请稍候..."}
@@ -460,6 +460,111 @@ async def update_llm_settings(request: Request):
     
     updated = update_llm_config(provider, model, api_key, session_id)
     return {"ok": True, "config": updated}
+
+
+# ─── 免费 API 渠道沙盒测试 ────────────────────────────
+
+@app.post("/api/free-channels/test")
+async def test_free_channel(request: Request):
+    """沙盒测试：向指定渠道发送一个简单请求，检测是否可用。
+
+    请求体:
+    {
+        "apiBase": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
+        "apiKey": "gsk_xxx"          // 可选，无 Key 渠道留空
+    }
+
+    返回:
+    {
+        "ok": true/false,
+        "latencyMs": 1234,
+        "model": "echoed-model-name",
+        "response": "Hi!",
+        "error": null               // 失败时填错误信息
+    }
+    """
+    import httpx
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "请求解析失败"}, status_code=400)
+
+    api_base = body.get("apiBase", "").strip()
+    model = body.get("model", "").strip()
+    api_key = body.get("apiKey", "").strip()
+
+    if not api_base or not model:
+        return JSONResponse({"error": "apiBase 和 model 必填"}, status_code=400)
+
+    # 构建测试请求 — 发一条最短的消息
+    test_messages = [
+        {"role": "user", "content": "Hi"},
+    ]
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    url = f"{api_base.rstrip('/')}/chat/completions"
+
+    start_time = time.time()
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, json={
+                "model": model,
+                "messages": test_messages,
+                "max_tokens": 16,
+                "temperature": 0.1,
+            }, headers=headers)
+
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        if resp.status_code != 200:
+            error_body = resp.text[:500]
+            return {
+                "ok": False,
+                "latencyMs": latency_ms,
+                "model": model,
+                "response": "",
+                "error": f"HTTP {resp.status_code}: {error_body}",
+            }
+
+        data = resp.json()
+        content = ""
+        try:
+            content = data["choices"][0]["message"]["content"] or ""
+        except (KeyError, IndexError):
+            pass
+
+        return {
+            "ok": True,
+            "latencyMs": latency_ms,
+            "model": model,
+            "response": content[:200],
+            "error": None,
+        }
+
+    except httpx.TimeoutException:
+        latency_ms = int((time.time() - start_time) * 1000)
+        return {
+            "ok": False,
+            "latencyMs": latency_ms,
+            "model": model,
+            "response": "",
+            "error": "请求超时（15秒）",
+        }
+    except Exception as e:
+        latency_ms = int((time.time() - start_time) * 1000)
+        return {
+            "ok": False,
+            "latencyMs": latency_ms,
+            "model": model,
+            "response": "",
+            "error": str(e)[:500],
+        }
 
 
 # ─── 长期用户记忆 API ─────────────────────────────────

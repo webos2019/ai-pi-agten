@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import ErrorBoundary from './components/ErrorBoundary'
 import Header from './components/Header'
 import ChatBody from './components/ChatBody'
 import Footer from './components/Footer'
@@ -12,6 +13,8 @@ import SettingsPanel from './components/SettingsPanel'
 import KnowledgeBase from './components/KnowledgeBase'
 import FileManager from './components/FileManager'
 import AgentManager from './components/AgentManager'
+import PersonalityTest from './components/PersonalityTest'
+import FreeChannels from './components/FreeChannels'
 import { useChat } from './hooks/useChat'
 import { useConversations } from './hooks/useConversations'
 import { useInputHistory } from './hooks/useInputHistory'
@@ -19,13 +22,14 @@ import { slashCommands, atReferences } from './types'
 import type { UploadedFile, StructuredRequest, AtReference } from './types'
 
 export default function App() {
-    const [view, setView] = useState<'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents'>('chat')
+    const [view, setView] = useState<'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents' | 'test'>('chat')
     const [mode, setMode] = useState('utility-skill')
     const [clientIP, setClientIP] = useState<string | null>(null)
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
     const [atRefs, setAtRefs] = useState<AtReference[]>(atReferences)
     const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
     const [settingsOpen, setSettingsOpen] = useState(false)
+    const [freeChannelsOpen, setFreeChannelsOpen] = useState(false)
     const [llmModel, setLlmModel] = useState<string>('')
     const [llmHasKey, setLlmHasKey] = useState<boolean>(true)
 
@@ -404,6 +408,7 @@ export default function App() {
                     view={view}
                     onSetView={setView}
                     onOpenSettings={() => setSettingsOpen(true)}
+                    onOpenFreeChannels={() => setFreeChannelsOpen(true)}
                     llmModel={llmModel}
                     llmHasKey={llmHasKey}
                     workspaces={conversations.workspaces}
@@ -415,35 +420,39 @@ export default function App() {
                 />
                 {view === 'stock' ? (
                     <div className="flex-1 overflow-auto stock-view-container">
-                        <StockAnalysis />
+                        <ErrorBoundary><StockAnalysis /></ErrorBoundary>
                     </div>
                 ) : view === 'chanlun' ? (
                     <div className="flex-1 overflow-auto chanlun-view-container">
-                        <ChanlunAnalysis />
+                        <ErrorBoundary><ChanlunAnalysis /></ErrorBoundary>
                     </div>
                 ) : view === 'image' ? (
                     <div className="flex-1 overflow-auto image-view-container">
-                        <TextToImage />
+                        <ErrorBoundary><TextToImage /></ErrorBoundary>
                     </div>
                 ) : view === 'opspilot' ? (
                     <div className="flex-1 overflow-auto opspilot-view-container">
-                        <OpsPilotDemo />
+                        <ErrorBoundary><OpsPilotDemo /></ErrorBoundary>
                     </div>
                 ) : view === 'voice' ? (
                     <div className="flex-1 overflow-hidden voicechat-view-container">
-                        <VoiceChat />
+                        <ErrorBoundary><VoiceChat /></ErrorBoundary>
                     </div>
                 ) : view === 'kb' ? (
                     <div className="flex-1 overflow-auto kb-view-container">
-                        <KnowledgeBase sessionId={conversations.sessionId} />
+                        <ErrorBoundary><KnowledgeBase sessionId={conversations.sessionId} /></ErrorBoundary>
                     </div>
                 ) : view === 'files' ? (
                     <div className="flex-1 overflow-auto files-view-container">
-                        <FileManager />
+                        <ErrorBoundary><FileManager /></ErrorBoundary>
                     </div>
                 ) : view === 'agents' ? (
                     <div className="flex-1 overflow-auto agents-view-container">
-                        <AgentManager />
+                        <ErrorBoundary><AgentManager /></ErrorBoundary>
+                    </div>
+                ) : view === 'test' ? (
+                    <div className="flex-1 overflow-auto pt-view-container">
+                        <ErrorBoundary><PersonalityTest /></ErrorBoundary>
                     </div>
                 ) : (
                     <>
@@ -494,6 +503,9 @@ export default function App() {
                         .catch(() => {})
                 }}
             />
+            <ErrorBoundary>
+                <FreeChannels open={freeChannelsOpen} onClose={() => setFreeChannelsOpen(false)} />
+            </ErrorBoundary>
         </div>
     )
 }

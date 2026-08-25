@@ -57,6 +57,9 @@ RETRY_DELAY_S = 2.0
 # 连续空搜索结果的最大次数 — 超过则强制停止，防止死循环
 MAX_CONSECUTIVE_EMPTY_SEARCHES = 2
 
+# 连续 web_fetch 错误的最大次数 — 超过则强制停止，防止 LLM 换 URL 反复重试
+MAX_CONSECUTIVE_FETCH_ERRORS = 2
+
 # ─── /refine 命令 ─────────────────────────────────────
 
 REFINE_SYSTEM_PROMPT = """你是一个持续化框架改进助手。分析当前对话轨迹，提取有证据支撑的教训。
@@ -772,9 +775,10 @@ def _check_should_stop(
     """should_stop_after_turn 钩子实现
 
     停止条件:
-    1. 工具调用总数超过 MAX_TOOL_CALLS
+    1. 工具调用总数超过 MAX_TOOL_CALLS → 返回 True 直接停止
     2. tool-first policy: 有 authoritative result 时直接输出并停止
-    3. 连续空搜索结果超过 MAX_CONSECUTIVE_EMPTY_SEARCHES → 停止防止死循环
+    3. 累计空搜索结果超过 MAX_CONSECUTIVE_EMPTY_SEARCHES → 注入引导消息+清空工具，让 LLM 下一轮直接回答
+    4. 累计 web_fetch 错误超过 MAX_CONSECUTIVE_FETCH_ERRORS → 注入引导消息+清空工具，让 LLM 下一轮直接回答
     """
     if not tool_results:
         return False
@@ -786,24 +790,51 @@ def _check_should_stop(
     if tool_call_tracker["count"] >= MAX_TOOL_CALLS:
         return True
 
-    # ── 检测连续空搜索结果 → 防止死循环 ──
-    # 当 web_search 返回空结果（或结果列表为空）时，LLM 会在 skill 系统提示的
-    # 要求下不断换关键词重试。如果连续 MAX_CONSECUTIVE_EMPTY_SEARCHES 次都搜不到，
-    # 说明确实搜不到，强制停止让 LLM 直接回答。
+    # ── 检测连续空搜索结果 → 搜索不到直接退出进程 ──
+    # 当 web_search 返回空结果时，直接退出进程，让客户重新提问。
+    empty_searches_this_turn = 0
     for tr in tool_results:
         if tr.tool_name == "web_search":
-            is_empty = _is_search_result_empty(tr.result)
-            if is_empty:
-                tool_call_tracker["consecutive_empty_searches"] = \
-                    tool_call_tracker.get("consecutive_empty_searches", 0) + 1
-                if tool_call_tracker["consecutive_empty_searches"] >= MAX_CONSECUTIVE_EMPTY_SEARCHES:
-                    lifecycle.write_chunk(create_text_chunk(
-                        "\n\n⚠️ 已多次搜索未找到相关结果，将直接基于已有信息回答。\n"
-                    ))
-                    return True
-            else:
-                # 搜索有结果 → 重置计数器
-                tool_call_tracker["consecutive_empty_searches"] = 0
+            if _is_search_result_empty(tr.result):
+                empty_searches_this_turn += 1
+    if empty_searches_this_turn > 0:
+        tool_call_tracker["empty_search_count"] = \
+            tool_call_tracker.get("empty_search_count", 0) + empty_searches_this_turn
+        if tool_call_tracker["empty_search_count"] >= MAX_CONSECUTIVE_EMPTY_SEARCHES:
+            lifecycle.write_chunk(create_text_chunk(
+                "\n\n⚠️ 搜索未找到相关结果，进程已退出，请重新提问。\n"
+            ))
+            lifecycle.emit_done_once()
+            import os
+            os._exit(0)
+
+    # ── 检测连续 web_fetch 错误 → 防止 LLM 换 URL 反复重试 ──
+    # 当 web_fetch 返回 HTTP 403/Forbidden 等错误时，LLM 会在 skill 系统提示的
+    # 要求下不断换 URL 重试。如果累计 MAX_CONSECUTIVE_FETCH_ERRORS 次失败，
+    # 说明目标网站确实不可抓取，注入引导消息让 LLM 下一轮直接基于已有信息回答。
+    #
+    # 注意: 使用累计计数器（不因 web_search 成功或 web_fetch 成功而重置），
+    # 因为搜索成功后 LLM 仍可能反复尝试抓取不同 URL，搜索+抓取交替出现时也要能拦截。
+    fetch_errors_this_turn = 0
+    for tr in tool_results:
+        if tr.tool_name in ("web_fetch", "web_browse"):
+            if _is_fetch_result_error(tr.result):
+                fetch_errors_this_turn += 1
+    if fetch_errors_this_turn > 0:
+        tool_call_tracker["fetch_error_count"] = \
+            tool_call_tracker.get("fetch_error_count", 0) + fetch_errors_this_turn
+        if tool_call_tracker["fetch_error_count"] >= MAX_CONSECUTIVE_FETCH_ERRORS:
+            lifecycle.write_chunk(create_text_chunk(
+                "\n\n⚠️ 已多次抓取网页失败（目标网站可能禁止访问），请直接基于已有搜索结果回答，不要再尝试抓取网页。\n"
+            ))
+            # 向上下文注入引导消息，让 LLM 下一轮直接生成回答而非继续抓取
+            ctx.messages.append(AgentMessage(
+                role="user",
+                content="[系统提示] 抓取网页已多次失败，目标网站可能有反爬机制。请不要再用 web_fetch 或 web_browse 抓取网页，直接基于已有的搜索结果和摘要信息给出完整回答。",
+            ))
+            # 清空工具列表 — LLM 下一轮无工具可调，只能生成文本回答
+            ctx.tools.clear()
+            # 不返回 True — 让 agent_loop 继续下一轮，LLM 会看到引导消息并直接回答
 
     # tool-first policy: 有 authoritative result → 直接输出工具结果并停止
     if result_policy == "tool-first":
@@ -834,6 +865,29 @@ def _is_search_result_empty(result_str: str) -> bool:
             return True
         return False
     except (json.JSONDecodeError, TypeError):
+        return False
+
+
+def _is_fetch_result_error(result_str: str) -> bool:
+    """检测 web_fetch / web_browse 的返回结果是否为错误（HTTP 403/Forbidden/超时等）"""
+    try:
+        data = json.loads(result_str)
+        # 有 error 字段 → 抓取失败
+        if data.get("error"):
+            return True
+        # HTTP 非 200 状态码
+        error_str = str(data.get("error", ""))
+        if error_str and ("HTTP" in error_str or "超时" in error_str or "失败" in error_str):
+            return True
+        # 内容为空且有 url 字段（说明请求了但没拿到内容）
+        if not data.get("content") and data.get("url"):
+            return True
+        return False
+    except (json.JSONDecodeError, TypeError):
+        # 非 JSON 格式，检查是否包含错误关键词
+        lower = result_str.lower()
+        if "error" in lower or "403" in lower or "forbidden" in lower or "超时" in lower:
+            return True
         return False
 
 

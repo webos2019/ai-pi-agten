@@ -78,7 +78,13 @@ if "%FRONTEND_MODE%"=="production" (
     echo   按 Ctrl+C 停止服务
     echo ============================================
     echo.
+    :RESTART_LOOP_PROD
     python app.py
+    if errorlevel 1000 (
+        echo [重启] 收到重启信号，1 秒后自动重启...
+        timeout /t 1 /nobreak >nul
+        goto RESTART_LOOP_PROD
+    )
     pause
 )
 
@@ -111,6 +117,12 @@ if "%FRONTEND_MODE%"=="backend_only" (
     echo   按 Ctrl+C 停止服务
     echo ============================================
     echo.
+    :RESTART_LOOP_BE
     python app.py
+    if errorlevel 1000 (
+        echo [重启] 收到重启信号，1 秒后自动重启...
+        timeout /t 1 /nobreak >nul
+        goto RESTART_LOOP_BE
+    )
     pause
 )

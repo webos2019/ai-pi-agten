@@ -9,9 +9,10 @@ interface Props {
     tokenUsage: { prompt: number; completion: number; total: number }
     todayTokens?: number
     dailyTokenLimit?: number
-    view?: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents'
-    onSetView?: (view: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents') => void
+    view?: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents' | 'test' | 'freechannels'
+    onSetView?: (view: 'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents' | 'test' | 'freechannels') => void
     onOpenSettings?: () => void
+    onOpenFreeChannels?: () => void
     llmModel?: string
     llmHasKey?: boolean
     // 工作区
@@ -33,7 +34,7 @@ function formatTokenK(n: number): string {
 const Header: React.FC<Props> = ({
     mode, onSetMode, hasMessages, onRegenerate, tokenUsage,
     todayTokens = 0, dailyTokenLimit = 500000,
-    view = 'chat', onSetView, onOpenSettings, llmModel, llmHasKey,
+    view = 'chat', onSetView, onOpenSettings, onOpenFreeChannels, llmModel, llmHasKey,
     workspaces, activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onDeleteWorkspace, onRenameWorkspace,
 }) => {
     const [wsDropdownOpen, setWsDropdownOpen] = useState(false)
@@ -100,6 +101,10 @@ const Header: React.FC<Props> = ({
         ? '文件管理 · 下载存储 · 文件浏览'
         : view === 'agents'
         ? 'Agent 管理 · Worker/Team/Project 编排'
+        : view === 'test'
+        ? '性格测试 · 荣格八维 120 题专业版'
+        : view === 'freechannels'
+        ? '免费渠道 · 免费 AI API 渠道总表 + 白名单/黑名单'
         : mode === 'utility-skill' ? '实用工具模式 · 工具调用 + 流式输出' : '文件与天气模式 · 本地读取 + 实时查询'
 
     const handleCreateWs = () => {
@@ -253,7 +258,7 @@ const Header: React.FC<Props> = ({
                     title={restarting ? '正在重启...' : '重启后端服务'}
                     disabled={restarting}
                 >
-                    <svg className="icon h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" style={restarting ? { animation: 'spin 1s linear infinite' } : undefined}>
+                    <svg className={`icon h-3.5 w-3.5 ${restarting ? 'restart-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                     </svg>
                     {restarting && <span>重启中</span>}
@@ -307,11 +312,15 @@ const Header: React.FC<Props> = ({
                 )}
                 {/* 视图切换 */}
                 {onSetView && (
-                    <div className="mode-selector flex overflow-hidden rounded-md">
+                    <div className="mode-selector flex overflow-x-auto rounded-md">
                         <button
                             className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'chat' ? 'active' : ''}`}
                             onClick={() => onSetView('chat')}
                         >对话</button>
+                        <button
+                            className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'freechannels' ? 'active' : ''}`}
+                            onClick={() => onSetView('freechannels')}
+                        >🆓 免费</button>
                         <button
                             className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'stock' ? 'active' : ''}`}
                             onClick={() => onSetView('stock')}
@@ -341,10 +350,26 @@ const Header: React.FC<Props> = ({
                             onClick={() => onSetView('agents')}
                         >Agent</button>
                         <button
+                            className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'test' ? 'active' : ''}`}
+                            onClick={() => onSetView('test')}
+                        >测试</button>
+                        <button
                             className={`mode-btn px-2.5 py-1.5 text-xs sm:px-3 ${view === 'voice' ? 'active' : ''}`}
                             onClick={() => onSetView('voice')}
                         >语音</button>
                     </div>
+                )}
+                {onOpenFreeChannels && (
+                    <button
+                        className="action-btn flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs"
+                        onClick={onOpenFreeChannels}
+                        title="免费 API 渠道总表 + 沙盒测试"
+                    >
+                        <svg className="icon h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+                        </svg>
+                        免费渠道
+                    </button>
                 )}
                 {view === 'chat' && (
                     <>

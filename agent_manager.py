@@ -1988,7 +1988,10 @@ async def stream_chat_room_message(message: str) -> _AsyncIterator[str]:
         yield f"data: {_json.dumps({'type': 'error', 'error': '消息不能为空'}, ensure_ascii=False)}\n\n"
         return
 
-    # 事件队列 — 在后台线程中执行 _send_chat_message_async，事件通过队列推送
+    # 立即推送 start 事件，让浏览器收到响应头 + 首个数据块
+    yield f"data: {_json.dumps({'type': 'start'}, ensure_ascii=False)}\n\n"
+
+    # 事件队列 — 在后台任务中执行 _send_chat_message_async，事件通过队列推送
     queue: _asyncio.Queue = _asyncio.Queue()
 
     def _on_event(event: dict) -> None:

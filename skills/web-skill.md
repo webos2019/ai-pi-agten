@@ -53,3 +53,10 @@ fallback_policy: direct-answer
 3. 可以将子任务委托给 delegate_sub_agent（如让 research 子代理做多步信息检索）
 4. 综合多个来源的信息给出完整回答
 5. 引用信息来源（URL）
+
+## web_fetch 抓取失败处理
+
+- 如果 web_fetch 返回错误（HTTP 403/超时/禁止访问），**不要换 URL 反复重试**
+- 很多在线阅读网站有反爬机制，换 URL 也大概率抓不到
+- 最多只抓取 1-2 个 URL，如果都失败就停止抓取
+- 直接基于 web_search 返回的正文摘要回答即可
