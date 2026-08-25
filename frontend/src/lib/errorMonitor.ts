@@ -49,110 +49,127 @@ function push(record: ErrorRecord) {
     console.error(`[ErrorMonitor][${record.type}]`, record.message, record.stack || '')
 }
 
-// ─── 1. 全局 JS 错误 ──────────────────────────────────
-window.addEventListener('error', (e) => {
-    // 忽略来自扩展程序的错误
-    if (e.filename && (e.filename.includes('chrome-extension') || e.filename.includes('moz-extension'))) return
-    push({
-        type: 'js',
-        message: e.message,
-        source: e.filename,
-        lineno: e.lineno,
-        colno: e.colno,
-        stack: e.error?.stack,
-        timestamp: Date.now(),
-        url: location.href,
-        userAgent: navigator.userAgent,
-    })
-})
+// ─── 初始化错误监测 ───────────────────────────────────
+function initErrorMonitor() {
+    try {
+        // 1. 全局 JS 错误
+        window.addEventListener('error', (e) => {
+            try {
+                if (e.filename && (e.filename.includes('chrome-extension') || e.filename.includes('moz-extension'))) return
+                push({
+                    type: 'js',
+                    message: e.message,
+                    source: e.filename,
+                    lineno: e.lineno,
+                    colno: e.colno,
+                    stack: e.error?.stack,
+                    timestamp: Date.now(),
+                    url: location.href,
+                    userAgent: navigator.userAgent,
+                })
+            } catch { /* ignore */ }
+        })
 
-// ─── 2. 未处理的 Promise 拒绝 ─────────────────────────
-window.addEventListener('unhandledrejection', (e) => {
-    const reason = e.reason
-    const msg = reason instanceof Error ? reason.message : String(reason)
-    const stack = reason instanceof Error ? reason.stack : undefined
-    push({
-        type: 'promise',
-        message: msg,
-        stack,
-        timestamp: Date.now(),
-        url: location.href,
-        userAgent: navigator.userAgent,
-    })
-})
+        // 2. 未处理的 Promise 拒绝
+        window.addEventListener('unhandledrejection', (e) => {
+            try {
+                const reason = e.reason
+                const msg = reason instanceof Error ? reason.message : String(reason)
+                const stack = reason instanceof Error ? reason.stack : undefined
+                push({
+                    type: 'promise',
+                    message: msg,
+                    stack,
+                    timestamp: Date.now(),
+                    url: location.href,
+                    userAgent: navigator.userAgent,
+                })
+            } catch { /* ignore */ }
+        })
 
-// ─── 3. 资源加载失败 ──────────────────────────────────
-window.addEventListener('error', (e) => {
-    const target = e.target as HTMLElement
-    if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
-        const src = (target as any).src || (target as any).href || ''
+        // 3. 资源加载失败
+        window.addEventListener('error', (e) => {
+            try {
+                const target = e.target as HTMLElement
+                if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK' || target.tagName === 'IMG')) {
+                    const src = (target as any).src || (target as any).href || ''
+                    push({
+                        type: 'resource',
+                        message: `资源加载失败: ${target.tagName} ${src}`,
+                        source: src,
+                        timestamp: Date.now(),
+                        url: location.href,
+                        userAgent: navigator.userAgent,
+                    })
+                }
+            } catch { /* ignore */ }
+        }, true)
+
+        // 4. 白屏检测
+        function checkWhiteScreen() {
+            const root = document.getElementById('root')
+            setTimeout(() => {
+                try {
+                    if (!root) {
+                        push({
+                            type: 'white-screen',
+                            message: '白屏检测: #root 元素不存在',
+                            timestamp: Date.now(),
+                            url: location.href,
+                            userAgent: navigator.userAgent,
+                        })
+                        return
+                    }
+                    const hasContent = root.children.length > 0 || root.textContent?.trim().length
+                    if (!hasContent) {
+                        push({
+                            type: 'white-screen',
+                            message: `白屏检测: #root 无内容 (children=${root.children.length}, text=${root.textContent?.length || 0})`,
+                            timestamp: Date.now(),
+                            url: location.href,
+                            userAgent: navigator.userAgent,
+                        })
+                    }
+                } catch { /* ignore */ }
+            }, 3000)
+        }
+
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', checkWhiteScreen)
+        } else {
+            checkWhiteScreen()
+        }
+    } catch { /* ignore */ }
+}
+
+initErrorMonitor()
+
+// ─── React 错误边界回调 ────────────────────────────
+export function reportReactError(error: Error, componentStack: string) {
+    try {
         push({
-            type: 'resource',
-            message: `资源加载失败: ${target.tagName} ${src}`,
-            source: src,
+            type: 'react',
+            message: error.message,
+            stack: (error.stack || '') + '\n\n组件栈:\n' + componentStack,
             timestamp: Date.now(),
             url: location.href,
             userAgent: navigator.userAgent,
         })
-    }
-}, true)
-
-// ─── 4. React 错误边界回调 ────────────────────────────
-export function reportReactError(error: Error, componentStack: string) {
-    push({
-        type: 'react',
-        message: error.message,
-        stack: error.stack + '\n\n组件栈:\n' + componentStack,
-        timestamp: Date.now(),
-        url: location.href,
-        userAgent: navigator.userAgent,
-    })
+    } catch { /* ignore */ }
 }
 
-// ─── 5. 存储操作异常 ──────────────────────────────────
+// ─── 存储操作异常 ──────────────────────────────────
 export function reportStorageError(operation: string, error: any) {
-    push({
-        type: 'storage',
-        message: `IndexedDB/localStorage 操作失败 [${operation}]: ${error?.message || String(error)}`,
-        stack: error?.stack,
-        timestamp: Date.now(),
-        url: location.href,
-        userAgent: navigator.userAgent,
-    })
-}
-
-// ─── 6. 白屏检测 ──────────────────────────────────────
-function checkWhiteScreen() {
-    const root = document.getElementById('root')
-    // 页面加载 3 秒后检查 root 是否为空或只有注释节点
-    setTimeout(() => {
-        if (!root) {
-            push({
-                type: 'white-screen',
-                message: '白屏检测: #root 元素不存在',
-                timestamp: Date.now(),
-                url: location.href,
-                userAgent: navigator.userAgent,
-            })
-            return
-        }
-        const hasContent = root.children.length > 0 || root.textContent?.trim().length
-        if (!hasContent) {
-            push({
-                type: 'white-screen',
-                message: `白屏检测: #root 无内容 (children=${root.children.length}, text=${root.textContent?.length || 0})`,
-                timestamp: Date.now(),
-                url: location.href,
-                userAgent: navigator.userAgent,
-            })
-        }
-    }, 3000)
-}
-
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', checkWhiteScreen)
-} else {
-    checkWhiteScreen()
+    try {
+        push({
+            type: 'storage',
+            message: `IndexedDB/localStorage 操作失败 [${operation}]: ${error?.message || String(error)}`,
+            stack: error?.stack,
+            timestamp: Date.now(),
+            url: location.href,
+            userAgent: navigator.userAgent,
+        })
+    } catch { /* ignore */ }
 }
 
 // ─── 导出日志 ─────────────────────────────────────────

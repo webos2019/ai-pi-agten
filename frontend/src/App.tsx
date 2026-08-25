@@ -22,7 +22,7 @@ import { slashCommands, atReferences } from './types'
 import type { UploadedFile, StructuredRequest, AtReference } from './types'
 
 export default function App() {
-    const [view, setView] = useState<'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents' | 'test'>('chat')
+    const [view, setView] = useState<'chat' | 'stock' | 'chanlun' | 'image' | 'opspilot' | 'voice' | 'kb' | 'files' | 'agents' | 'test' | 'freechannels'>('chat')
     const [mode, setMode] = useState('utility-skill')
     const [clientIP, setClientIP] = useState<string | null>(null)
     const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([])
@@ -453,6 +453,10 @@ export default function App() {
                 ) : view === 'test' ? (
                     <div className="flex-1 overflow-auto pt-view-container">
                         <ErrorBoundary><PersonalityTest /></ErrorBoundary>
+                    </div>
+                ) : view === 'freechannels' ? (
+                    <div className="flex-1 overflow-auto freechannels-view-container">
+                        <ErrorBoundary><FreeChannels open={true} onClose={() => setView('chat')} /></ErrorBoundary>
                     </div>
                 ) : (
                     <>
