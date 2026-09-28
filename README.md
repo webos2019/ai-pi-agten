@@ -54,7 +54,8 @@ submission/           提交材料
 | DELETE | `/api/conversations/{id}` | 删除会话 |
 | GET | `/api/health` | 健康检查 |
 | GET | `/docs` | OpenAPI 文档 |
-
+## 项目文档 
+submission/Pi-Agent-项目文档.md
 ## Pi Agent 工作流
 
 `/tasklist @docs://versions/v0.x.x-xxx.md` 触发受控运行时：
